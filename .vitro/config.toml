@@ -1,0 +1,25 @@
+# Vitro cell config for the vitro repo itself — used to dogfood vitro on
+# its own development.
+
+memory = "8192M"
+vcpu = 4
+
+# nix builds need lots of disk
+post_push = "nix flake check --no-build"
+
+[secrets]
+keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPcwKdkSvC2AP3kbQva2nhLOM9ha4VIuHVTne5RPIXLz ixxie@contingent"]
+
+[egress]
+# OpenRouter for LLM calls, GitHub for PRs, npmjs for package installs
+writes.allowed = ["openrouter.ai", "api.github.com", "registry.npmjs.org"]
+
+[[egress.credentials]]
+host = "openrouter.ai"
+header = "Authorization"
+env_var = "OPENROUTER_API_KEY"
+
+[[egress.credentials]]
+host = "api.github.com"
+header = "Authorization"
+env_var = "GITHUB_TOKEN"
