@@ -1,0 +1,36 @@
+# Vitro dogfoods itself: this env is for developing vitro from inside vitro.
+
+memory = "8192M"
+vcpu = 4
+server = "grove"
+
+[egress]
+writes.allowed = [
+    "api.anthropic.com",
+    "statsig.anthropic.com",
+    "platform.claude.com",
+    "api.github.com",
+    "registry.npmjs.org",
+    "openrouter.ai",
+]
+
+[[egress.credentials]]
+host = "openrouter.ai"
+header = "Authorization"
+env_var = "OPENROUTER_API_KEY"
+
+[[egress.credentials]]
+host = "api.github.com"
+header = "Authorization"
+env_var = "GITHUB_TOKEN"
+
+[[persist]]
+path = "/home/agent/.claude"
+purpose = "claude OAuth state and session history"
+
+[[persist]]
+path = "/var/log/vitro"
+purpose = "session log archives"
+
+[secrets]
+keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPcwKdkSvC2AP3kbQva2nhLOM9ha4VIuHVTne5RPIXLz ixxie@contingent"]
