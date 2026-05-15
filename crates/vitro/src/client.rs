@@ -210,11 +210,11 @@ impl Client {
         let encoded = crate::exec::shell_escape(content);
         let cell_cmd = format!("printf '%s' {} > /var/lib/vitro/secrets.env && chmod 600 /var/lib/vitro/secrets.env", encoded);
         let host_cmd = crate::exec::vitro_hop(name, &cell_cmd);
-        let (_stdout, exit_code) = self.rt.block_on(async {
+        let (stdout, exit_code) = self.rt.block_on(async {
             self.session.exec(&host_cmd).await
         }).context("push_secrets_cell failed")?;
         if exit_code != 0 {
-            anyhow::bail!("push_secrets_cell exited with code {exit_code}");
+            anyhow::bail!("push_secrets_cell exited with code {exit_code}: {stdout}");
         }
         Ok(())
     }
