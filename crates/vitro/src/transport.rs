@@ -137,8 +137,9 @@ impl Transport for RemoteTransport {
         let already_running = self.is_running(cell)?;
 
         // ALWAYS sync secrets — idempotent, cheap. Host never holds an age key.
-        if let Some(content) = secrets::decrypt_content(repo.root(), cfg)? {
-            self.client.push_secrets(&content)?;
+        let secrets_content = secrets::decrypt_content(repo.root(), cfg)?;
+        if let Some(ref content) = secrets_content {
+            self.client.push_secrets(content)?;
         }
 
         // ALWAYS prepare — init_clone_server is a no-op if the bare repo
@@ -174,6 +175,11 @@ impl Transport for RemoteTransport {
             );
         }
         sp.finish_with_message(format!("{} pushed", ok()));
+
+        // Push secrets into the cell so the ACP agent can source them.
+        if let Some(ref content) = secrets_content {
+            self.client.push_secrets_cell(cell, content)?;
+        }
 
         if already_running {
             return Ok(());
