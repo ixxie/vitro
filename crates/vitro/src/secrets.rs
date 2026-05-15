@@ -13,20 +13,33 @@ fn secrets_env_path(repo_root: &Path) -> PathBuf {
     repo_root.join(".vitro/secrets.env")
 }
 
-fn ssh_key_paths() -> Vec<PathBuf> {
+fn age_identity_paths() -> Vec<PathBuf> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
     let mut paths = vec![
+        // canonical sops age key location (dotfiles convention)
+        PathBuf::from(&home).join(".config/sops/age/keys.txt"),
+        // standard age config
+        PathBuf::from(&home).join(".config/age/keys.txt"),
+        // legacy — age identities stored alongside SSH keys
         PathBuf::from(&home).join(".ssh/id_ed25519"),
         PathBuf::from(&home).join(".ssh/id_rsa"),
     ];
     // server-side key
     paths.push(PathBuf::from("/var/lib/vitro/ssh/id_ed25519"));
+
+    // env-var overrides take precedence
+    for var in &["SOPS_AGE_KEY_FILE", "AGE_IDENTITY_FILE"] {
+        if let Ok(val) = std::env::var(var) {
+            paths.insert(0, PathBuf::from(val));
+        }
+    }
+
     paths.retain(|p| p.exists());
     paths
 }
 
 fn decrypt(age_file: &Path) -> Result<String> {
-    let keys = ssh_key_paths();
+    let keys = age_identity_paths();
     if keys.is_empty() {
         anyhow::bail!("no SSH keys found for decryption");
     }
