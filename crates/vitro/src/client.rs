@@ -221,12 +221,6 @@ impl Client {
         }
         Ok(())
     }
-        Ok(())
-    }
-        Ok(())
-    }
-        Ok(())
-    }
 
     /// Sync local files to the cell on the server
     #[instrument(skip(self, paths))]
