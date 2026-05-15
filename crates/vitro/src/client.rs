@@ -210,27 +210,11 @@ impl Client {
         let encoded = crate::exec::shell_escape(content);
         let cell_cmd = format!("printf '%s' {} > /var/lib/vitro/secrets.env && chmod 600 /var/lib/vitro/secrets.env", encoded);
         let host_cmd = crate::exec::vitro_hop(name, &cell_cmd);
-        let status = self.rt.block_on(async {
-            self.session.exec(&host_cmd, false, false).await
+        let (_stdout, exit_code) = self.rt.block_on(async {
+            self.session.exec(&host_cmd).await
         }).context("push_secrets_cell failed")?;
-        if !status.success() {
-            anyhow::bail!("push_secrets_cell exited with {}", status);
-        }
-        Ok(())
-    }
-
-    /// Push plaintext secrets into the cell at `/var/lib/vitro/secrets.env`
-    /// so the ACP agent can source them. Uses `vitro shell --server` to hop
-    /// from host into the cell.
-    pub fn push_secrets_cell(&self, name: &str, content: &str) -> Result<()> {
-        let encoded = crate::exec::shell_escape(content);
-        let cell_cmd = format!("printf '%s' {} > /var/lib/vitro/secrets.env && chmod 600 /var/lib/vitro/secrets.env", encoded);
-        let host_cmd = crate::exec::vitro_hop(name, &cell_cmd);
-        let status = self.rt.block_on(async {
-            self.session.exec(&host_cmd, false, false).await
-        }).context("push_secrets_cell failed")?;
-        if !status.success() {
-            anyhow::bail!("push_secrets_cell exited with {}", status);
+        if exit_code != 0 {
+            anyhow::bail!("push_secrets_cell exited with code {exit_code}");
         }
         Ok(())
     }
