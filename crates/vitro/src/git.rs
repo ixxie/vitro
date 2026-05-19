@@ -171,7 +171,7 @@ fn install_chown_hook(clone: &Path) -> Result<()> {
     let hook_path = hooks_dir.join("post-receive");
     let repo_dir = clone.to_string_lossy();
     let hook = format!(
-        "#!/bin/sh\nchown -R 1000:users \"{repo_dir}\"\n",
+        "#!/bin/sh\ngit --work-tree=\"{repo_dir}\" --git-dir=\"{repo_dir}/.git\" checkout -f HEAD\nchown -R 1000:users \"{repo_dir}\"\n",
     );
     std::fs::write(&hook_path, hook)?;
     std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755))?;

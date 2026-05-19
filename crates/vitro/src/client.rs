@@ -114,9 +114,52 @@ impl Client {
         serde_json::from_str(&resp).context(format!("bad response: {resp}"))
     }
 
-    /// SSH hop for shell or command execution
+    /// SSH into an env.
+    ///
+    /// Interactive sessions use ProxyJump (laptop → grove → VM in one hop)
+    /// to avoid double-encryption lag. Non-interactive commands fall back to
+    /// the grove-side `vitro shell -c` path since they don't need a PTY.
     pub fn shell(&self, name: &str, command: Option<&str>, session: Option<&str>) -> Result<()> {
-        let target = &self.user_host;
+        let grove = &self.user_host;
+
+        if command.is_none() {
+            // Interactive: ProxyJump directly to the VM for low-latency PTY.
+            let vm_ip = self.list()
+                .ok()
+                .and_then(|envs| envs.into_iter().find(|e| e.name == name))
+                .and_then(|e| e.ip);
+
+            if let Some(ip) = vm_ip {
+                let vm_target = format!("agent@{ip}");
+                let sess = session.unwrap_or("default");
+                // build the dtach attach/create command on the VM side
+                let repo = format!("/{name}");
+                let inner = format!(
+                    "cd {} && exec $SHELL -l",
+                    crate::exec::shell_escape(&repo)
+                );
+                let dtach_cmd = crate::session::dtach_attach(name, sess, &inner);
+                let status = std::process::Command::new("ssh")
+                    .args([
+                        "-t", "-A",
+                        "-o", "StrictHostKeyChecking=no",
+                        "-o", "UserKnownHostsFile=/dev/null",
+                        "-o", "ServerAliveInterval=30",
+                        "-o", "ServerAliveCountMax=3",
+                        "-J", grove,
+                        &vm_target,
+                        &dtach_cmd,
+                    ])
+                    .status()
+                    .context("ssh shell (ProxyJump) failed")?;
+                if !status.success() {
+                    anyhow::bail!("shell exited with {}", status);
+                }
+                return Ok(());
+            }
+        }
+
+        // Non-interactive or IP not available: run via grove
         let remote_cmd = match command {
             Some(cmd) => crate::exec::vitro_hop(name, cmd, session),
             None => {
@@ -134,7 +177,7 @@ impl Client {
                 "-o", "UserKnownHostsFile=/dev/null",
                 "-o", "ServerAliveInterval=30",
                 "-o", "ServerAliveCountMax=3",
-                target,
+                grove,
                 &remote_cmd,
             ])
             .status()
