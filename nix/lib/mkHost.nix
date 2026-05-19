@@ -18,7 +18,6 @@
 }: {
   nixosConfigurations.${name} = nixpkgs.lib.nixosSystem {
     inherit system;
-    specialArgs = { vitroSrc = vitro.outPath; };
     modules = [
       disko.nixosModules.disko
       vitro.nixosModules.server

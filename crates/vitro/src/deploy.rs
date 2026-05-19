@@ -36,6 +36,34 @@ fn is_nixos(target: &str) -> Result<bool> {
     Ok(output.status.success())
 }
 
+fn vitro_src_from_lock(host_dir: &Path) -> Option<PathBuf> {
+    let lock = std::fs::read_to_string(host_dir.join("flake.lock")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&lock).ok()?;
+    let path = json["nodes"]["vitro"]["locked"]["path"].as_str()?;
+    Some(PathBuf::from(path))
+}
+
+fn deploy_flake_src(target: &str, host_dir: &Path) -> Result<()> {
+    let src = match vitro_src_from_lock(host_dir) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    println!("deploying vitro flake-src...");
+    let status = Command::new("rsync")
+        .args([
+            "-a", "--delete",
+            "--exclude=target/", "--exclude=.git/",
+            &format!("{}/", src.display()),
+            &format!("{target}:/var/lib/vitro/flake-src/"),
+        ])
+        .status()
+        .context("failed to rsync vitro flake-src")?;
+    if !status.success() {
+        anyhow::bail!("rsync vitro flake-src failed");
+    }
+    Ok(())
+}
+
 fn deploy_vm_config(target: &str, host_dir: &Path) -> Result<()> {
     let vm_dir = host_dir.join("vm");
     if !vm_dir.exists() {
@@ -79,6 +107,7 @@ fn update(target: &str, name: &str, host_dir: &Path, boot: bool, reboot: bool) -
     }
 
     deploy_vm_config(target, host_dir)?;
+    deploy_flake_src(target, host_dir)?;
 
     if boot && reboot {
         println!("rebooting {target}...");
@@ -153,8 +182,8 @@ fn bootstrap(target: &str, name: &str, host_dir: &Path) -> Result<()> {
         }
     }
 
-    // deploy vm-config after bootstrap
     deploy_vm_config(target, host_dir)?;
+    deploy_flake_src(target, host_dir)?;
 
     println!("bootstrapped '{name}'");
     Ok(())
