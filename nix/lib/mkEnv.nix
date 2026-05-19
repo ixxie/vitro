@@ -2,7 +2,7 @@
 #
 # Used by the per-env wrapper flake generated at runtime by `vitro create`.
 # The wrapper flake passes inputs and env-specific parameters.
-{ vitro, nixpkgs, microvm }:
+{ vitro, nixpkgs, microvm, claude-code ? null }:
 
 {
   name,
@@ -21,6 +21,9 @@
   vm = hostConfig.vm or { vcpu = 4; mem = 4096; varSize = 4096; };
 
   env = { inherit ip name envDir repo; };
+
+  claudePkg = lib.optional (claude-code != null)
+    claude-code.packages.${system}.default;
 
   persistShares = lib.imap0 (idx: p:
     let stripped = lib.removePrefix "/" p.path;
@@ -104,7 +107,14 @@ in {
           };
         };
         # create mount points for persist shares inside the VM
-        systemd.tmpfiles.rules = map (p: "d ${p.path} 0755 root root -") persist;
+        # use 0700 for home dirs (paths under /home/<user>), 0755 otherwise
+        systemd.tmpfiles.rules = map (p:
+          if lib.hasPrefix "/home/" p.path
+          then "d ${p.path} 0700 ${user.name} users -"
+          else "d ${p.path} 0755 root root -"
+        ) persist;
+        # additional packages beyond base.nix
+        environment.systemPackages = claudePkg;
       }
     ]
     ++ modules;

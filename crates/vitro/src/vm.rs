@@ -126,10 +126,14 @@ fn generate_flake(name: &str, ip: &str, repo_name: &str, config: &EnvConfig) -> 
       url = "github:microvm-nix/microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     }};
+    claude-code = {{
+      url = "github:sadjow/claude-code-nix";
+      inputs.nixpkgs.follows = "nixpkgs";
+    }};
 {extra_inputs}  }};
 
-  outputs = {{ nixpkgs, vitro, microvm, ... }} @ inputs:
-    vitro.lib.mkEnv {{ inherit vitro nixpkgs microvm; }} {{
+  outputs = {{ nixpkgs, vitro, microvm, claude-code, ... }} @ inputs:
+    vitro.lib.mkEnv {{ inherit vitro nixpkgs microvm claude-code; }} {{
       name = "{name}";
       ip = "{ip}";
       envDir = "{env_dir}";
@@ -230,6 +234,11 @@ pub fn start(name: &str, repo_name: &str, config: &EnvConfig) -> Result<()> {
         let host_path = env_dir(name).join("persist").join(stripped);
         std::fs::create_dir_all(&host_path)
             .with_context(|| format!("creating persist dir for {}", p.path))?;
+        // chown to uid 1000 (the in-VM agent user) so virtiofs writes work
+        Command::new("chown")
+            .args(["-R", "1000:users", &host_path.to_string_lossy()])
+            .status()
+            .ok();
     }
 
     // generate wrapper flake
