@@ -114,12 +114,11 @@ impl Transport for RemoteTransport {
         let remote_url = format!("vitro://{}/{}", self.client.user_host(), env);
         repo.add_vitro_remote(&remote_url).ok();
 
-        // Push secrets into the env so the ACP agent can source them.
-        if let Some(ref content) = secrets_content {
-            self.client.push_secrets_env(env, content)?;
-        }
-
         if already_running {
+            // Push updated secrets into the running env.
+            if let Some(ref content) = secrets_content {
+                self.client.push_secrets_env(env, content)?;
+            }
             return Ok(());
         }
 
@@ -127,6 +126,11 @@ impl Transport for RemoteTransport {
         let sp = spinner(&format!("booting {}", env));
         self.client.up(env, repo_name, false, cfg)?;
         sp.finish_with_message(format!("{} booted {}", up_icon(), bold(env)));
+
+        // Push secrets into the env now that it's running.
+        if let Some(ref content) = secrets_content {
+            self.client.push_secrets_env(env, content)?;
+        }
 
         // sync user files
         let client_cfg = server::load_client_config();
