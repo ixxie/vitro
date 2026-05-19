@@ -55,6 +55,7 @@ in {
 
   config = mkIf cfg.enable {
     systemd.network.wait-online.enable = false;
+    networking.useNetworkd = true;
 
     # Bridge network
     systemd.network = {
