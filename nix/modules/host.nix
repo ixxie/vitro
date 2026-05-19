@@ -2,7 +2,7 @@
   config,
   lib,
   pkgs,
-  inputs,
+  vitroSrc,
   ...
 }:
 with lib; let
@@ -177,6 +177,8 @@ in {
       "d /var/log/vitro 0755 root root -"
       "f /var/lib/vitro/dns-hosts 0666 root root -"
       "f /var/lib/vitro/ip-pool.json 0644 root root -"
+      # stable symlink so generated env flakes can reference this server's vitro
+      "L+ /var/lib/vitro/flake-src - - - - ${vitroSrc}"
     ];
 
     # Host config JSON — read by mkCell at nix eval time

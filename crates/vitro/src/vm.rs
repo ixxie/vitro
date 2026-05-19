@@ -121,7 +121,7 @@ fn generate_flake(name: &str, ip: &str, repo_name: &str, config: &EnvConfig) -> 
     let flake = format!(r#"{{
   inputs = {{
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    vitro.url = "github:ixxie/vitro";
+    vitro.url = "path:/var/lib/vitro/flake-src";
     microvm = {{
       url = "github:microvm-nix/microvm.nix";
       inputs.nixpkgs.follows = "nixpkgs";
