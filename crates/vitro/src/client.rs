@@ -132,8 +132,12 @@ impl Client {
             if let Some(ip) = vm_ip {
                 let vm_target = format!("agent@{ip}");
                 let sess = session.unwrap_or("default");
-                // build the dtach attach/create command on the VM side
-                let repo = format!("/{name}");
+                let envs = self.list().unwrap_or_default();
+                let repo_name = envs.iter()
+                    .find(|e| e.name == name)
+                    .and_then(|e| e.repo.clone())
+                    .unwrap_or_else(|| name.to_string());
+                let repo = format!("/{repo_name}");
                 let inner = format!(
                     "cd {} && exec $SHELL -l",
                     crate::exec::shell_escape(&repo)
