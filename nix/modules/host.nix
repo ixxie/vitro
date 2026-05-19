@@ -25,7 +25,7 @@ with lib; let
   };
 
   proxyConfig = builtins.toJSON {
-    cells = [];
+    envs = [];
     egress = {
       reads = {
         methods = cfg.egress.reads.methods;
@@ -172,7 +172,7 @@ in {
     systemd.tmpfiles.rules = [
       "d /var/lib/vitro 0755 root root -"
       "d /var/lib/vitro/ca 0755 root root -"
-      "d /var/lib/vitro/cells 0755 root root -"
+      "d /var/lib/vitro/envs 0755 root root -"
       "d /var/lib/vitro/copyfiles 0755 root root -"
       "d /var/log/vitro 0755 root root -"
       "f /var/lib/vitro/dns-hosts 0666 root root -"
@@ -185,7 +185,7 @@ in {
     # Allow git operations on cell repos (owned by uid 1000, accessed by root via SSH/vitro-services).
     # Scoped to the cell tree — host code never touches git outside this prefix.
     programs.git.enable = true;
-    programs.git.config.safe.directory = ["/var/lib/vitro/cells/*"];
+    programs.git.config.safe.directory = ["/var/lib/vitro/envs/*"];
 
 
     # Proxy config
