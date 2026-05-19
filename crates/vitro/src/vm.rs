@@ -510,7 +510,6 @@ pub fn acp_forward(name: &str, command: &str) -> Result<()> {
 pub fn shell(
     name: &str,
     command: Option<&str>,
-    session: Option<&str>,
 ) -> Result<()> {
     let (_, target) = ssh_target(name)?;
 
@@ -551,24 +550,14 @@ pub fn shell(
         }
     }
 
-    let (use_pty, cmd) = match (command, session) {
-        (None, None) => {
-            // interactive shell without explicit session -> default session
-            let inner = format!("cd {} && exec $SHELL -l", crate::exec::shell_escape(&workspace));
-            (true, crate::session::dtach_attach(name, "default", &inner))
+    let (use_pty, cmd) = match command {
+        None => {
+            let cmd = format!("cd {} && exec $SHELL -l", crate::exec::shell_escape(&workspace));
+            (true, cmd)
         }
-        (Some(c), None) => {
-            // one-shot command, no session -> direct SSH
+        Some(c) => {
             let script = format!("cd {} && {}", crate::exec::shell_escape(&workspace), c);
             (false, format!("sh -c {}", crate::exec::shell_escape(&script)))
-        }
-        (_, Some(s)) => {
-            // named session (interactive or command) -> dtach attach/create
-            let inner = match command {
-                Some(c) => format!("cd {} && {}", crate::exec::shell_escape(&workspace), c),
-                None => format!("cd {} && exec $SHELL -l", crate::exec::shell_escape(&workspace)),
-            };
-            (true, crate::session::dtach_attach(name, s, &inner))
         }
     };
 

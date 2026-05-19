@@ -17,29 +17,7 @@ pub struct EnvConfig {
     #[serde(default)]
     pub egress: EnvEgressConfig,
     #[serde(default)]
-    pub session: Option<SessionConfig>,
-    #[serde(default)]
     pub persist: Vec<PersistConfig>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct SessionConfig {
-    /// Command + args to run as the long-lived in-env agent session.
-    pub command: Vec<String>,
-    #[serde(default)]
-    pub hook: Vec<HookConfig>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct HookConfig {
-    /// Trigger type: "match", "idle", "exit", "start"
-    pub on: String,
-    /// Regex pattern (required for `on = "match"`)
-    pub pattern: Option<String>,
-    /// Duration string for idle trigger (e.g. "10m")
-    pub after: Option<String>,
-    /// Script path (relative to repo root) to execute
-    pub run: String,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -92,7 +70,6 @@ impl Default for EnvConfig {
             server: None,
             secrets: SecretsConfig::default(),
             egress: EnvEgressConfig::default(),
-            session: None,
             persist: Vec::new(),
         }
     }

@@ -24,7 +24,7 @@ fn spinner(msg: &str) -> indicatif::ProgressBar {
 pub trait Transport {
     fn is_running(&self, env: &str) -> Result<bool>;
     fn ensure_running(&self, env: &str, repo: &git::Repo, cfg: &config::EnvConfig) -> Result<()>;
-    fn shell(&self, env: &str, command: Option<&str>, session: Option<&str>) -> Result<()>;
+    fn shell(&self, env: &str, command: Option<&str>) -> Result<()>;
     /// Run a single command with captured output. Used by `--json`.
     fn shell_capture(&self, env: &str, command: &str) -> Result<vm::CapturedShell>;
     /// Pipe stdin/stdout/stderr through to a command running inside
@@ -60,8 +60,8 @@ impl Transport for LocalTransport {
         Ok(())
     }
 
-    fn shell(&self, env: &str, command: Option<&str>, session: Option<&str>) -> Result<()> {
-        vm::shell(env, command, session)
+    fn shell(&self, env: &str, command: Option<&str>) -> Result<()> {
+        vm::shell(env, command)
     }
 
     fn acp_forward(&self, env: &str, command: &str) -> Result<()> {
@@ -148,8 +148,8 @@ impl Transport for RemoteTransport {
         Ok(())
     }
 
-    fn shell(&self, env: &str, command: Option<&str>, session: Option<&str>) -> Result<()> {
-        self.client.shell(env, command, session)
+    fn shell(&self, env: &str, command: Option<&str>) -> Result<()> {
+        self.client.shell(env, command)
     }
 
     fn shell_capture(&self, env: &str, command: &str) -> Result<vm::CapturedShell> {

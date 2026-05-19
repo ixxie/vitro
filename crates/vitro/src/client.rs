@@ -116,33 +116,25 @@ impl Client {
 
     /// SSH into an env.
     ///
-    /// Interactive sessions use ProxyJump (laptop → grove → VM in one hop)
-    /// to avoid double-encryption lag. Non-interactive commands fall back to
-    /// the grove-side `vitro shell -c` path since they don't need a PTY.
-    pub fn shell(&self, name: &str, command: Option<&str>, session: Option<&str>) -> Result<()> {
+    /// Interactive PTY: ProxyJump (laptop → grove → VM in one hop) for low
+    /// latency. Non-interactive commands run via `vitro shell -c` on grove.
+    pub fn shell(&self, name: &str, command: Option<&str>) -> Result<()> {
         let grove = &self.user_host;
 
         if command.is_none() {
-            // Interactive: ProxyJump directly to the VM for low-latency PTY.
-            let vm_ip = self.list()
-                .ok()
-                .and_then(|envs| envs.into_iter().find(|e| e.name == name))
-                .and_then(|e| e.ip);
+            let envs = self.list().unwrap_or_default();
+            let env = envs.iter().find(|e| e.name == name);
+            let vm_ip = env.and_then(|e| e.ip.clone());
+            let repo_name = env
+                .and_then(|e| e.repo.clone())
+                .unwrap_or_else(|| name.to_string());
 
             if let Some(ip) = vm_ip {
                 let vm_target = format!("agent@{ip}");
-                let sess = session.unwrap_or("default");
-                let envs = self.list().unwrap_or_default();
-                let repo_name = envs.iter()
-                    .find(|e| e.name == name)
-                    .and_then(|e| e.repo.clone())
-                    .unwrap_or_else(|| name.to_string());
-                let repo = format!("/{repo_name}");
                 let inner = format!(
                     "cd {} && exec $SHELL -l",
-                    crate::exec::shell_escape(&repo)
+                    crate::exec::shell_escape(&format!("/{repo_name}"))
                 );
-                let dtach_cmd = crate::session::dtach_attach(name, sess, &inner);
                 let status = std::process::Command::new("ssh")
                     .args([
                         "-t", "-A",
@@ -152,7 +144,7 @@ impl Client {
                         "-o", "ServerAliveCountMax=3",
                         "-J", grove,
                         &vm_target,
-                        &dtach_cmd,
+                        &inner,
                     ])
                     .status()
                     .context("ssh shell (ProxyJump) failed")?;
@@ -163,16 +155,10 @@ impl Client {
             }
         }
 
-        // Non-interactive or IP not available: run via grove
+        // Non-interactive (or IP not available): hop through grove
         let remote_cmd = match command {
-            Some(cmd) => crate::exec::vitro_hop(name, cmd, session),
-            None => {
-                let mut s = format!("vitro shell --server {}", name);
-                if let Some(sess) = session {
-                    s.push_str(&format!(" --session {}", crate::exec::shell_escape(sess)));
-                }
-                s
-            }
+            Some(cmd) => crate::exec::vitro_hop(name, cmd),
+            None => format!("vitro shell --server {}", name),
         };
         let status = std::process::Command::new("ssh")
             .args([
@@ -195,7 +181,7 @@ impl Client {
     /// SSH hop with captured output. Mirrors vm::shell_capture for remote envs.
     pub fn shell_capture(&self, name: &str, command: &str) -> Result<crate::vm::CapturedShell> {
         let target = &self.user_host;
-        let remote_cmd = crate::exec::vitro_hop(name, command, None);
+        let remote_cmd = crate::exec::vitro_hop(name, command);
         let start = std::time::Instant::now();
         let output = std::process::Command::new("ssh")
             .args([
@@ -223,7 +209,7 @@ impl Client {
     /// corrupted by terminal modes) and no `-t`.
     pub fn acp_forward(&self, name: &str, command: &str) -> Result<()> {
         let target = &self.user_host;
-        let remote_cmd = crate::exec::vitro_hop(name, command, None);
+        let remote_cmd = crate::exec::vitro_hop(name, command);
         let status = std::process::Command::new("ssh")
             .args([
                 "-A",
@@ -265,7 +251,7 @@ impl Client {
             .map(|b| format!("\\x{:02x}", b))
             .collect();
         let env_cmd = format!("printf '{}' > /var/lib/vitro/secrets.env && chmod 600 /var/lib/vitro/secrets.env", hex);
-        let host_cmd = crate::exec::vitro_hop(name, &env_cmd, None);
+        let host_cmd = crate::exec::vitro_hop(name, &env_cmd);
         let (stdout, exit_code) = self.rt.block_on(async {
             self.session.exec(&host_cmd).await
         }).context("push_secrets_env failed")?;

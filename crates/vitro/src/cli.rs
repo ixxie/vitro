@@ -82,8 +82,6 @@ enum Commands {
     Secrets(SecretsArgs),
     /// Manage servers
     Server(ServerArgs),
-    /// Manage agent sessions (send input, tail logs)
-    Session(SessionArgs),
     #[command(hide = true)]
     /// Internal utilities
     Util(UtilArgs),
@@ -123,15 +121,6 @@ struct ShellArgs {
     /// Server-side mode (skip repo checks)
     #[arg(long, hide = true)]
     server: bool,
-    /// Named dtach session (default: "default" for interactive shells)
-    #[arg(long)]
-    session: Option<String>,
-    /// List active dtach sessions for this env
-    #[arg(short = 'l', long = "list-sessions")]
-    list_sessions: bool,
-    /// Kill a dtach session (and its process)
-    #[arg(short = 'k', long = "kill-session")]
-    kill_session: Option<String>,
 }
 
 #[derive(Args)]
@@ -216,37 +205,6 @@ enum SecretsAction {
     Edit,
     /// Decrypt .vitro/secrets.age → .vitro/secrets.env
     Decrypt,
-}
-
-#[derive(Args)]
-struct SessionArgs {
-    #[command(subcommand)]
-    action: SessionAction,
-}
-
-#[derive(Subcommand)]
-enum SessionAction {
-    /// Send text input to a running session
-    Send {
-        /// Env name
-        env: String,
-        /// Text to send (escape sequences like \\n are interpreted)
-        text: String,
-        /// Session name (default: "default")
-        #[arg(long, default_value = "default")]
-        session: String,
-    },
-    /// Tail the session log for an env
-    Log {
-        /// Env name
-        env: String,
-        /// Session name (default: "default")
-        #[arg(long, default_value = "default")]
-        session: String,
-        /// Follow (tail -f)
-        #[arg(short, long)]
-        follow: bool,
-    },
 }
 
 #[derive(Args)]
@@ -351,7 +309,7 @@ pub fn run() -> Result<()> {
         }
 
         Commands::Shell(args) if args.server => {
-            vm::shell(&args.name, args.command.as_deref(), args.session.as_deref())
+            vm::shell(&args.name, args.command.as_deref())
         }
         Commands::Stop(args) => {
             let repo = git::Repo::open()?;
@@ -364,10 +322,6 @@ pub fn run() -> Result<()> {
         Commands::Tunnel(args) => {
             let repo = git::Repo::open()?;
             cmd_tunnel(&repo, args)
-        }
-        Commands::Session(args) => {
-            let repo = git::Repo::open()?;
-            cmd_session(&repo, args)
         }
     }
 }
@@ -609,24 +563,6 @@ fn cmd_stop(repo: &git::Repo, env: &str) -> Result<()> {
 fn cmd_shell(repo: &git::Repo, args: ShellArgs) -> Result<()> {
     let env = &args.name;
 
-    if args.list_sessions {
-        let sessions = crate::session::list(env)?;
-        if sessions.is_empty() {
-            println!("  {}", dim("no sessions"));
-        } else {
-            for s in sessions {
-                println!("  {} {}", ok(), bold(&s));
-            }
-        }
-        return Ok(());
-    }
-
-    if let Some(name) = args.kill_session.as_deref() {
-        crate::session::kill(env, name)?;
-        println!("{} killed session {}", rm(), bold(name));
-        return Ok(());
-    }
-
     let active = find_env_server(repo, env)?;
     let cfg = config::load(repo.root())?;
     let t = make_transport(&active)?;
@@ -645,11 +581,10 @@ fn cmd_shell(repo: &git::Repo, args: ShellArgs) -> Result<()> {
         return Ok(());
     }
 
-    if args.command.is_none() && args.session.is_none() {
+    if args.command.is_none() {
         println!("{} entering {}", arrow(), bold(env));
     }
-    let session = args.session.as_deref();
-    t.shell(env, args.command.as_deref(), session)
+    t.shell(env, args.command.as_deref())
 }
 
 struct EnvRow {
@@ -978,46 +913,6 @@ fn cmd_status(repo: &git::Repo, env: Option<&str>, json: bool) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn cmd_session(repo: &git::Repo, args: SessionArgs) -> Result<()> {
-    match args.action {
-        SessionAction::Send { env, text, session } => {
-            let active = find_env_server(repo, &env)?;
-            let (_, ssh_target) = if active.is_server() {
-                let _c = connect_remote(&active)?;
-                // For remote envs, the VM SSH info must be obtained via the server
-                anyhow::bail!("session send on remote envs not yet supported — shell in and use dtach directly");
-            } else {
-                vm::ssh_target(&env)?
-            };
-            let text_interp = text.replace("\\n", "\n").replace("\\r", "\r");
-            crate::session::send(&env, &session, &text_interp, &ssh_target)?;
-            println!("{} sent to {}/{}", ok(), bold(&env), bold(&session));
-            Ok(())
-        }
-        SessionAction::Log { env, session, follow } => {
-            let active = find_env_server(repo, &env)?;
-            if active.is_server() {
-                anyhow::bail!("session log on remote envs not yet supported");
-            }
-            let log = crate::session::log_path_host(
-                &vm::env_dir(&env),
-                &session,
-            );
-            if !log.exists() {
-                println!("  {}", dim(&format!("no log at {}", log.display())));
-                return Ok(());
-            }
-            let mut cmd = std::process::Command::new("tail");
-            if follow {
-                cmd.arg("-f");
-            }
-            cmd.arg(&log);
-            cmd.status().context("tail failed")?;
-            Ok(())
-        }
-    }
 }
 
 #[cfg(test)]

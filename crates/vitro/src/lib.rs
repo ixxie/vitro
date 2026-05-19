@@ -12,7 +12,6 @@ pub mod remote;
 pub mod secrets;
 pub mod server;
 pub mod server_init;
-pub mod session;
 pub mod ssh;
 pub mod transport;
 pub mod vm;
