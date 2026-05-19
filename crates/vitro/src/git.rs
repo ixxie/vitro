@@ -94,6 +94,18 @@ impl Repo {
         Ok(())
     }
 
+    pub fn push_to_vitro(&self) -> Result<()> {
+        let status = Command::new("git")
+            .args(["push", "--force", "vitro", "HEAD:main"])
+            .current_dir(&self.root)
+            .status()
+            .context("git push vitro")?;
+        if !status.success() {
+            anyhow::bail!("git push to vitro remote failed");
+        }
+        Ok(())
+    }
+
     /// Resolve the env repo path for the git-remote-vitro helper.
     /// Finds a running local env; falls back to the first env dir.
     pub fn resolve_env_path(&self) -> Result<PathBuf> {
