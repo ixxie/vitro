@@ -300,6 +300,34 @@ pub fn start(name: &str, repo_name: &str, config: &EnvConfig) -> Result<()> {
 }
 
 #[instrument]
+pub fn microvm_unit_active(name: &str) -> bool {
+    Command::new("systemctl")
+        .args(["is-active", "--quiet", &format!("microvm@{name}")])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+pub fn force_stop_microvm(name: &str) -> Result<()> {
+    if !microvm_unit_active(name) {
+        return Ok(());
+    }
+    let rt = runtime_dir(name);
+    let ip = std::fs::read_to_string(rt.join("ip")).unwrap_or_default().trim().to_string();
+    let repo = std::fs::read_to_string(rt.join("repo")).unwrap_or_default().trim().to_string();
+    if !ip.is_empty() {
+        let _ = deregister_proxy_rules(&ip);
+    }
+    if !repo.is_empty() {
+        deregister_dns(name, &repo);
+    }
+    if let Err(e) = run_privileged(&["systemctl", "stop", &format!("microvm@{name}")]) {
+        warn!(error = %e, "failed to stop VM");
+    }
+    std::fs::remove_file(rt.join("ip")).ok();
+    Ok(())
+}
+
 pub fn stop(name: &str) -> Result<()> {
     let rt = runtime_dir(name);
     if !rt.join("ip").exists() {

@@ -135,6 +135,13 @@ pub fn init_clone_server(name: &str, _config: &EnvConfig) -> Result<PathBuf> {
         std::fs::remove_dir_all(&clone).ok();
     }
 
+    // If a microvm for this env is still running, its virtiofs daemons are
+    // pinned to old inodes — they won't see the newly-created repo dir.
+    // Force-stop the unit so the next `up()` boots cleanly.
+    if crate::vm::microvm_unit_active(name) {
+        crate::vm::force_stop_microvm(name).ok();
+    }
+
     // ensure env dir exists
     let env_dir = crate::vm::env_dir(name);
     std::fs::create_dir_all(&env_dir)?;
