@@ -7,7 +7,7 @@ use std::path::Path;
 #[allow(dead_code)] // fields read by mitmproxy addon via JSON
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct ProxyConfig {
-    pub cells: Vec<CellRules>,
+    pub envs: Vec<EnvRules>,
     pub egress: EgressConfig,
     #[serde(rename = "httpPort")]
     pub http_port: u16,
@@ -36,24 +36,24 @@ pub struct EgressRules {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct CellRules {
-    #[serde(rename = "cellIp")]
-    pub cell_ip: String,
-    #[serde(rename = "branchId")]
-    pub branch_id: String,
+pub struct EnvRules {
+    #[serde(rename = "envIp")]
+    pub env_ip: String,
+    #[serde(rename = "envId")]
+    pub env_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub egress: Option<CellEgress>,
+    pub egress: Option<EnvEgress>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct CellEgress {
+pub struct EnvEgress {
     #[serde(default)]
     pub additive: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reads: Option<CellEgressRules>,
+    pub reads: Option<EnvEgressRules>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub writes: Option<CellEgressRules>,
-    /// Per-cell credentials. The Python addon reads these alongside
+    pub writes: Option<EnvEgressRules>,
+    /// Per-env credentials. The Python addon reads these alongside
     /// the static global credentials when injecting Authorization /
     /// custom headers on egress. Without this field, serde drops
     /// `credentials` from the registration payload silently and the
@@ -63,7 +63,7 @@ pub struct CellEgress {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
-pub struct CellEgressRules {
+pub struct EnvEgressRules {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,39 +78,39 @@ pub struct CredentialRule {
     pub env_var: String,
 }
 
-const DYNAMIC_CELLS: &str = "/var/lib/vitro/cells.json";
+const DYNAMIC_ENVS: &str = "/var/lib/vitro/envs.json";
 
-fn load_cells() -> Vec<CellRules> {
-    std::fs::read_to_string(DYNAMIC_CELLS)
+fn load_envs() -> Vec<EnvRules> {
+    std::fs::read_to_string(DYNAMIC_ENVS)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_default()
 }
 
-fn save_cells(cells: &[CellRules]) {
-    let json = serde_json::to_string_pretty(cells).unwrap_or_default();
-    if let Err(e) = std::fs::write(DYNAMIC_CELLS, json) {
-        eprintln!("warning: failed to save cells.json: {e}");
+fn save_envs(envs: &[EnvRules]) {
+    let json = serde_json::to_string_pretty(envs).unwrap_or_default();
+    if let Err(e) = std::fs::write(DYNAMIC_ENVS, json) {
+        eprintln!("warning: failed to save envs.json: {e}");
     }
 }
 
 // Pure helpers — testable without I/O.
 
-pub fn upsert_cell(mut cells: Vec<CellRules>, rule: CellRules) -> Vec<CellRules> {
-    cells.retain(|c| c.cell_ip != rule.cell_ip);
-    cells.push(rule);
-    cells
+pub fn upsert_env(mut envs: Vec<EnvRules>, rule: EnvRules) -> Vec<EnvRules> {
+    envs.retain(|e| e.env_ip != rule.env_ip);
+    envs.push(rule);
+    envs
 }
 
-pub fn remove_cell(mut cells: Vec<CellRules>, ip: &str) -> Vec<CellRules> {
-    cells.retain(|c| c.cell_ip != ip);
-    cells
+pub fn remove_env(mut envs: Vec<EnvRules>, ip: &str) -> Vec<EnvRules> {
+    envs.retain(|e| e.env_ip != ip);
+    envs
 }
 
-/// Extract the IP from a `DELETE /cells/<ip>` request line.
-pub fn parse_delete_cells_path(first_line: &str) -> Option<&str> {
+/// Extract the IP from a `DELETE /envs/<ip>` request line.
+pub fn parse_delete_envs_path(first_line: &str) -> Option<&str> {
     let path = first_line.split_whitespace().nth(1)?;
-    let ip = path.strip_prefix("/cells/")?;
+    let ip = path.strip_prefix("/envs/")?;
     if ip.is_empty() { None } else { Some(ip) }
 }
 
@@ -154,19 +154,19 @@ pub fn normalize_peer_ip(addr: SocketAddr) -> String {
     ip.strip_prefix("::ffff:").map(str::to_string).unwrap_or(ip)
 }
 
-/// True iff `ip` is the `cellIp` of a currently-registered cell in
-/// `/var/lib/vitro/cells.json`. Reads lazily — the file is small and
-/// changes on every cell up/down.
-fn is_registered_cell_ip(ip: &str) -> bool {
-    let content = match std::fs::read_to_string(DYNAMIC_CELLS) {
+/// True iff `ip` is the `envIp` of a currently-registered env in
+/// `/var/lib/vitro/envs.json`. Reads lazily — the file is small and
+/// changes on every env up/down.
+fn is_registered_env_ip(ip: &str) -> bool {
+    let content = match std::fs::read_to_string(DYNAMIC_ENVS) {
         Ok(c) => c,
         Err(_) => return false,
     };
-    let cells: Vec<serde_json::Value> = match serde_json::from_str(&content) {
+    let envs: Vec<serde_json::Value> = match serde_json::from_str(&content) {
         Ok(c) => c,
         Err(_) => return false,
     };
-    cells.iter().any(|c| c.get("cellIp").and_then(|v| v.as_str()) == Some(ip))
+    envs.iter().any(|e| e.get("envIp").and_then(|v| v.as_str()) == Some(ip))
 }
 
 // Git credential handler (simple TCP)
@@ -182,7 +182,7 @@ async fn serve_git_credentials(listener: tokio::net::TcpListener) {
 
         tokio::spawn(async move {
             let peer_ip = normalize_peer_ip(peer);
-            if !is_registered_cell_ip(&peer_ip) {
+            if !is_registered_env_ip(&peer_ip) {
                 eprintln!("git credential: denied unknown peer {peer_ip}");
                 let _ = stream.write_all(b"HTTP/1.1 403 Forbidden\r\n\r\n").await;
                 return;
@@ -238,7 +238,7 @@ struct UpRequest {
     #[serde(default)]
     create: bool,
     #[serde(default)]
-    config: crate::config::CellConfig,
+    config: crate::config::EnvConfig,
 }
 
 #[derive(serde::Serialize)]
@@ -256,7 +256,7 @@ struct NameRequest {
 }
 
 #[derive(serde::Serialize)]
-struct CellStatus {
+struct EnvStatus {
     name: String,
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -377,10 +377,10 @@ async fn handle_delete(req: &str) -> (&'static str, String) {
 }
 
 async fn handle_list() -> (&'static str, String) {
-    let result = tokio::task::spawn_blocking(|| -> anyhow::Result<Vec<CellStatus>> {
-        let clones = crate::vm::list_cells()?;
-        let mut cells = Vec::new();
-        for name in clones {
+    let result = tokio::task::spawn_blocking(|| -> anyhow::Result<Vec<EnvStatus>> {
+        let names = crate::vm::list_envs()?;
+        let mut envs = Vec::new();
+        for name in names {
             let running = crate::vm::is_running(&name).unwrap_or(false);
             let rt = crate::vm::runtime_dir(&name);
             let ip = if running {
@@ -390,24 +390,24 @@ async fn handle_list() -> (&'static str, String) {
             };
             let repo = std::fs::read_to_string(rt.join("repo"))
                 .ok().map(|s| s.trim().to_string());
-            cells.push(CellStatus {
+            envs.push(EnvStatus {
                 name,
                 status: if running { "running" } else { "stopped" }.to_string(),
                 ip,
                 repo,
             });
         }
-        Ok(cells)
+        Ok(envs)
     }).await;
 
     match result {
-        Ok(Ok(cells)) => ("200 OK", serde_json::to_string(&cells).unwrap()),
+        Ok(Ok(envs)) => ("200 OK", serde_json::to_string(&envs).unwrap()),
         Ok(Err(e)) => ("500 Internal Server Error", format!("{{\"error\":\"{e}\"}}")),
         Err(e) => ("500 Internal Server Error", format!("{{\"error\":\"{e}\"}}")),
     }
 }
 
-// Control API — manages dynamic cell registrations + VM lifecycle
+// Control API — manages dynamic env registrations + VM lifecycle
 
 async fn serve_control_api(listener: tokio::net::TcpListener) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -426,16 +426,16 @@ async fn serve_control_api(listener: tokio::net::TcpListener) {
             };
             let req = String::from_utf8_lossy(&buf[..n]).to_string();
 
-            let (status, body) = if req.starts_with("POST /cells") {
+            let (status, body) = if req.starts_with("POST /envs") {
                 if let Some(body_start) = req.find("\r\n\r\n") {
                     let json = &req[body_start + 4..];
-                    match serde_json::from_str::<CellRules>(json) {
+                    match serde_json::from_str::<EnvRules>(json) {
                         Ok(rules) => {
-                            let ip = rules.cell_ip.clone();
-                            let branch = rules.branch_id.clone();
-                            let cells = upsert_cell(load_cells(), rules);
-                            save_cells(&cells);
-                            eprintln!("registered cell {ip} (branch: {branch})");
+                            let ip = rules.env_ip.clone();
+                            let env_id = rules.env_id.clone();
+                            let envs = upsert_env(load_envs(), rules);
+                            save_envs(&envs);
+                            eprintln!("registered env {ip} (id: {env_id})");
                             ("200 OK", "ok".to_string())
                         }
                         Err(e) => ("400 Bad Request", format!("bad request: {e}")),
@@ -443,20 +443,20 @@ async fn serve_control_api(listener: tokio::net::TcpListener) {
                 } else {
                     ("400 Bad Request", "missing body".to_string())
                 }
-            } else if req.starts_with("DELETE /cells/") {
+            } else if req.starts_with("DELETE /envs/") {
                 let first_line = req.lines().next().unwrap_or("");
-                match parse_delete_cells_path(first_line) {
+                match parse_delete_envs_path(first_line) {
                     Some(ip) => {
-                        let cells = remove_cell(load_cells(), ip);
-                        save_cells(&cells);
-                        eprintln!("deregistered cell {ip}");
+                        let envs = remove_env(load_envs(), ip);
+                        save_envs(&envs);
+                        eprintln!("deregistered env {ip}");
                         ("200 OK", "ok".to_string())
                     }
                     None => ("400 Bad Request", "missing ip".to_string()),
                 }
-            } else if req.starts_with("GET /cells") {
-                let cells = load_cells();
-                let json = serde_json::to_string(&cells).unwrap_or_default();
+            } else if req.starts_with("GET /envs") {
+                let envs = load_envs();
+                let json = serde_json::to_string(&envs).unwrap_or_default();
                 ("200 OK", json)
             } else if req.starts_with("POST /prepare") {
                 handle_prepare(&req).await
@@ -498,7 +498,7 @@ pub async fn run(config_path: &str) -> Result<()> {
         std::fs::create_dir_all(log_dir).ok();
     }
 
-    save_cells(&config.cells);
+    save_envs(&config.envs);
 
     let git_addr: SocketAddr = format!("{}:{}", config.bind_address, config.git_credential_port).parse()?;
     let git_listener = tokio::net::TcpListener::bind(git_addr).await?;
@@ -528,72 +528,72 @@ pub async fn run(config_path: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn rule(ip: &str, branch: &str) -> CellRules {
-        CellRules {
-            cell_ip: ip.to_string(),
-            branch_id: branch.to_string(),
+    fn rule(ip: &str, env_id: &str) -> EnvRules {
+        EnvRules {
+            env_ip: ip.to_string(),
+            env_id: env_id.to_string(),
             egress: None,
         }
     }
 
     #[test]
     fn upsert_adds_new() {
-        let cells = upsert_cell(vec![], rule("10.0.0.5", "feat"));
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].cell_ip, "10.0.0.5");
+        let envs = upsert_env(vec![], rule("10.0.0.5", "feat"));
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].env_ip, "10.0.0.5");
     }
 
     #[test]
     fn upsert_replaces_existing_by_ip() {
-        let cells = vec![rule("10.0.0.5", "old")];
-        let cells = upsert_cell(cells, rule("10.0.0.5", "new"));
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].branch_id, "new");
+        let envs = vec![rule("10.0.0.5", "old")];
+        let envs = upsert_env(envs, rule("10.0.0.5", "new"));
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].env_id, "new");
     }
 
     #[test]
-    fn upsert_keeps_other_cells() {
-        let cells = vec![rule("10.0.0.5", "a"), rule("10.0.0.6", "b")];
-        let cells = upsert_cell(cells, rule("10.0.0.5", "a-new"));
-        assert_eq!(cells.len(), 2);
+    fn upsert_keeps_other_envs() {
+        let envs = vec![rule("10.0.0.5", "a"), rule("10.0.0.6", "b")];
+        let envs = upsert_env(envs, rule("10.0.0.5", "a-new"));
+        assert_eq!(envs.len(), 2);
         let by_ip: std::collections::HashMap<_, _> =
-            cells.iter().map(|c| (c.cell_ip.clone(), c.branch_id.clone())).collect();
+            envs.iter().map(|e| (e.env_ip.clone(), e.env_id.clone())).collect();
         assert_eq!(by_ip["10.0.0.5"], "a-new");
         assert_eq!(by_ip["10.0.0.6"], "b");
     }
 
     #[test]
     fn remove_strips_matching_ip() {
-        let cells = vec![rule("10.0.0.5", "a"), rule("10.0.0.6", "b")];
-        let cells = remove_cell(cells, "10.0.0.5");
-        assert_eq!(cells.len(), 1);
-        assert_eq!(cells[0].cell_ip, "10.0.0.6");
+        let envs = vec![rule("10.0.0.5", "a"), rule("10.0.0.6", "b")];
+        let envs = remove_env(envs, "10.0.0.5");
+        assert_eq!(envs.len(), 1);
+        assert_eq!(envs[0].env_ip, "10.0.0.6");
     }
 
     #[test]
     fn remove_unknown_ip_is_noop() {
-        let cells = vec![rule("10.0.0.5", "a")];
-        let cells = remove_cell(cells, "10.0.0.99");
-        assert_eq!(cells.len(), 1);
+        let envs = vec![rule("10.0.0.5", "a")];
+        let envs = remove_env(envs, "10.0.0.99");
+        assert_eq!(envs.len(), 1);
     }
 
     #[test]
     fn parse_delete_path_basic() {
         assert_eq!(
-            parse_delete_cells_path("DELETE /cells/10.0.0.5 HTTP/1.1"),
+            parse_delete_envs_path("DELETE /envs/10.0.0.5 HTTP/1.1"),
             Some("10.0.0.5"),
         );
     }
 
     #[test]
     fn parse_delete_path_missing_ip_rejected() {
-        assert_eq!(parse_delete_cells_path("DELETE /cells/ HTTP/1.1"), None);
+        assert_eq!(parse_delete_envs_path("DELETE /envs/ HTTP/1.1"), None);
     }
 
     #[test]
     fn parse_delete_path_garbage_rejected() {
-        assert_eq!(parse_delete_cells_path(""), None);
-        assert_eq!(parse_delete_cells_path("GET / HTTP/1.1"), None);
+        assert_eq!(parse_delete_envs_path(""), None);
+        assert_eq!(parse_delete_envs_path("GET / HTTP/1.1"), None);
     }
 
     #[test]
@@ -630,21 +630,21 @@ mod tests {
     }
 
     #[test]
-    fn cell_rules_json_roundtrip_minimal() {
+    fn env_rules_json_roundtrip_minimal() {
         let r = rule("10.0.0.5", "feat");
         let json = serde_json::to_string(&r).unwrap();
         // shape the addon expects
-        assert!(json.contains("\"cellIp\":\"10.0.0.5\""));
-        assert!(json.contains("\"branchId\":\"feat\""));
-        let back: CellRules = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.cell_ip, "10.0.0.5");
-        assert_eq!(back.branch_id, "feat");
+        assert!(json.contains("\"envIp\":\"10.0.0.5\""));
+        assert!(json.contains("\"envId\":\"feat\""));
+        let back: EnvRules = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.env_ip, "10.0.0.5");
+        assert_eq!(back.env_id, "feat");
     }
 
     #[test]
-    fn cell_rules_json_roundtrip_with_egress() {
-        let json = r#"{"cellIp":"10.0.0.5","branchId":"feat","egress":{"additive":true,"writes":{"allowed":["api.x.com"]}}}"#;
-        let r: CellRules = serde_json::from_str(json).unwrap();
+    fn env_rules_json_roundtrip_with_egress() {
+        let json = r#"{"envIp":"10.0.0.5","envId":"feat","egress":{"additive":true,"writes":{"allowed":["api.x.com"]}}}"#;
+        let r: EnvRules = serde_json::from_str(json).unwrap();
         let eg = r.egress.unwrap();
         assert!(eg.additive);
         let writes = eg.writes.unwrap();

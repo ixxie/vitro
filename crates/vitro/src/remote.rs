@@ -15,9 +15,9 @@ pub fn parse_url(url: &str) -> (Target, Option<String>) {
     if stripped == "localhost" || stripped == "local" || stripped.is_empty() {
         return (Target::Local, None);
     }
-    // format: user@host or user@host/cellname
-    if let Some((host, cell)) = stripped.split_once('/') {
-        (Target::Remote(host.to_string()), Some(cell.to_string()))
+    // format: user@host or user@host/envname
+    if let Some((host, env)) = stripped.split_once('/') {
+        (Target::Remote(host.to_string()), Some(env.to_string()))
     } else {
         (Target::Remote(stripped.to_string()), None)
     }
@@ -27,45 +27,26 @@ pub fn parse_url(url: &str) -> (Target, Option<String>) {
 ///
 /// Invoked by git as `git-remote-vitro <remote> <url>`.
 /// Uses the `connect` capability to delegate to git-upload-pack
-/// or git-receive-pack on the resolved cell repo path.
+/// or git-receive-pack on the resolved env repo path.
 pub fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
     let url = args.get(2).map(|s| s.as_str()).unwrap_or("vitro://localhost");
-    let (target, cell_name) = parse_url(url);
+    let (target, env_name) = parse_url(url);
 
-    let cell_path = match &target {
+    let env_path = match &target {
         Target::Local => {
             let repo = git::Repo::open()?;
-            let path = repo.resolve_cell_path()?;
+            let path = repo.resolve_env_path()?;
             path.to_str()
-                .context("cell path is not valid UTF-8")?
+                .context("env path is not valid UTF-8")?
                 .to_string()
         }
-        Target::Remote(user_host) => {
-            if let Some(name) = &cell_name {
-                // cell name in URL — resolve directly
-                format!("/var/lib/vitro/cells/{name}/repo")
-            } else {
-                // fall back to repo-name-based resolution
-                let repo_name = git::Repo::open()
-                    .ok()
-                    .and_then(|r| r.root().file_name().map(|n| n.to_string_lossy().to_string()))
-                    .unwrap_or_default();
-                let mut ssh_args = vec![user_host.as_str(), "vitro", "util", "resolve-cell"];
-                if !repo_name.is_empty() {
-                    ssh_args.push("--repo");
-                    ssh_args.push(&repo_name);
-                }
-                let output = Command::new("ssh")
-                    .args(&ssh_args)
-                    .output()
-                    .context("failed to SSH for cell resolution")?;
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    anyhow::bail!("remote cell resolution failed: {stderr}");
-                }
-                String::from_utf8(output.stdout)?.trim().to_string()
-            }
+        Target::Remote(_user_host) => {
+            let name = env_name.as_deref()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "remote vitro URL must include env name: vitro://<user>@<host>/<env>"
+                ))?;
+            format!("/var/lib/vitro/envs/{name}/repo")
         }
     };
 
@@ -92,9 +73,9 @@ pub fn run() -> Result<()> {
 
             // exec the service — locally or via SSH
             let err = match &target {
-                Target::Local => Command::new(service).arg(&cell_path).exec(),
+                Target::Local => Command::new(service).arg(&env_path).exec(),
                 Target::Remote(user_host) => Command::new("ssh")
-                    .args([user_host.as_str(), service, &cell_path])
+                    .args([user_host.as_str(), service, &env_path])
                     .exec(),
             };
             anyhow::bail!("failed to exec {service}: {err}");

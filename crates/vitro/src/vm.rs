@@ -3,8 +3,8 @@ use std::path::Path;
 use std::process::Command;
 use tracing::{info, warn, instrument};
 
-use crate::cell;
-use crate::config::CellConfig;
+use crate::env;
+use crate::config::EnvConfig;
 const PROXY_CONTROL: &str = "http://127.0.0.1:8082";
 const DNS_HOSTS: &str = "/var/lib/vitro/dns-hosts";
 
@@ -20,8 +20,8 @@ fn run_privileged(args: &[&str]) -> Result<std::process::ExitStatus> {
     }
 }
 
-// Re-export cell path helpers
-pub use crate::cell::{cell_dir, cell_repo_dir, runtime_dir, list_cells};
+// Re-export env path helpers
+pub use crate::env::{env_dir, env_repo_dir, runtime_dir, list_envs};
 
 const SERVER_VM_CONFIG: &str = "/var/lib/vitro/vm-config";
 
@@ -30,7 +30,7 @@ fn has_server_config() -> bool {
 }
 
 fn has_repo_config(name: &str) -> bool {
-    cell_repo_dir(name).join(".vitro/flake.nix").exists()
+    env_repo_dir(name).join(".vitro/flake.nix").exists()
 }
 
 const HOST_CONFIG: &str = "/etc/vitro/host-config.json";
@@ -41,16 +41,16 @@ fn read_host_config_user() -> Option<String> {
     val.get("user")?.get("name")?.as_str().map(|s| s.to_string())
 }
 
-fn generate_flake(name: &str, ip: &str, repo_name: &str) -> Result<()> {
-    let flake_dir = cell::cell_flake_dir(name);
+fn generate_flake(name: &str, ip: &str, repo_name: &str, config: &EnvConfig) -> Result<()> {
+    let flake_dir = env::env_flake_dir(name);
     // clean slate — remove stale lock files
     if flake_dir.exists() {
         std::fs::remove_dir_all(&flake_dir).ok();
     }
     std::fs::create_dir_all(&flake_dir)?;
 
-    let cell_dir_str = cell_dir(name).to_string_lossy().to_string();
-    let repo_vitro_dir = cell_repo_dir(name).join(".vitro");
+    let env_dir_str = env_dir(name).to_string_lossy().to_string();
+    let repo_vitro_dir = env_repo_dir(name).join(".vitro");
 
     let has_server = has_server_config();
     let has_repo = has_repo_config(name);
@@ -108,6 +108,16 @@ fn generate_flake(name: &str, ip: &str, repo_name: &str) -> Result<()> {
         format!("      modules = [ {} ];", modules.join(" "))
     };
 
+    // build persist list
+    let persist_nix = if config.persist.is_empty() {
+        String::new()
+    } else {
+        let entries: Vec<String> = config.persist.iter().map(|p| {
+            format!("{{ path = \"{}\"; }}", p.path.replace('"', "\\\""))
+        }).collect();
+        format!("      persist = [ {} ];\n", entries.join(" "))
+    };
+
     let flake = format!(r#"{{
   inputs = {{
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -119,23 +129,23 @@ fn generate_flake(name: &str, ip: &str, repo_name: &str) -> Result<()> {
 {extra_inputs}  }};
 
   outputs = {{ nixpkgs, vitro, microvm, ... }} @ inputs:
-    vitro.lib.mkCell {{ inherit vitro nixpkgs microvm; }} {{
+    vitro.lib.mkEnv {{ inherit vitro nixpkgs microvm; }} {{
       name = "{name}";
       ip = "{ip}";
-      cellDir = "{cell_dir}";
+      envDir = "{env_dir}";
       repo = "{repo}";
       hostConfig = {host_config};
-{modules}
-    }};
+{modules}{persist}    }};
 }}
 "#,
         extra_inputs = extra_inputs,
         name = name,
         ip = ip,
-        cell_dir = cell_dir_str,
+        env_dir = env_dir_str,
         repo = repo_name,
         host_config = host_config_nix,
         modules = modules_nix,
+        persist = persist_nix,
     );
 
     std::fs::write(flake_dir.join("flake.nix"), flake)?;
@@ -149,7 +159,7 @@ fn generate_flake(name: &str, ip: &str, repo_name: &str) -> Result<()> {
         .status()
         .context("nix flake update failed")?;
     if !status.success() {
-        anyhow::bail!("failed to update flake inputs for cell '{name}'");
+        anyhow::bail!("failed to update flake inputs for env '{name}'");
     }
 
     Ok(())
@@ -207,18 +217,26 @@ pub fn is_running(name: &str) -> Result<bool> {
 }
 
 #[instrument(skip(config))]
-pub fn start(name: &str, repo_name: &str, config: &CellConfig) -> Result<()> {
+pub fn start(name: &str, repo_name: &str, config: &EnvConfig) -> Result<()> {
     let rt = runtime_dir(name);
     std::fs::create_dir_all(&rt)?;
 
-    let ip = cell::allocate_ip(name)?;
+    let ip = env::allocate_ip(name)?;
     info!(ip = %ip, "allocated IP");
 
+    // create host-side directories for persist mounts
+    for p in &config.persist {
+        let stripped = p.path.trim_start_matches('/');
+        let host_path = env_dir(name).join("persist").join(stripped);
+        std::fs::create_dir_all(&host_path)
+            .with_context(|| format!("creating persist dir for {}", p.path))?;
+    }
+
     // generate wrapper flake
-    generate_flake(name, &ip, repo_name)?;
+    generate_flake(name, &ip, repo_name, config)?;
 
     // build the VM runner
-    let flake_path = cell::cell_flake_dir(name);
+    let flake_path = env::env_flake_dir(name);
     let flake_ref = format!("path:{}", flake_path.display());
     let runner_attr = format!("{flake_ref}#nixosConfigurations.{name}.config.microvm.declaredRunner");
 
@@ -231,9 +249,9 @@ pub fn start(name: &str, repo_name: &str, config: &CellConfig) -> Result<()> {
         .output()
         .context("nix build failed")?;
     if !output.status.success() {
-        cell::release_ip(name);
+        env::release_ip(name);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("failed to build cell VM '{name}': {stderr}");
+        anyhow::bail!("failed to build env VM '{name}': {stderr}");
     }
     let runner_path = String::from_utf8(output.stdout)?.trim().to_string();
 
@@ -249,14 +267,14 @@ pub fn start(name: &str, repo_name: &str, config: &CellConfig) -> Result<()> {
     // start the VM
     let status = run_privileged(&["systemctl", "start", &format!("microvm@{name}")])?;
     if !status.success() {
-        cell::release_ip(name);
-        anyhow::bail!("failed to start VM for cell '{name}'");
+        env::release_ip(name);
+        anyhow::bail!("failed to start VM for env '{name}'");
     }
 
     // register proxy rules from vitro.toml
     register_proxy_rules(&ip, name, config)?;
 
-    // register DNS: branch.repo.cell -> VM IP
+    // register DNS: env.repo.env -> VM IP
     register_dns(name, repo_name, &ip);
 
     // save state
@@ -297,7 +315,7 @@ pub fn stop(name: &str) -> Result<()> {
         warn!(error = %e, "failed to stop VM");
     }
 
-    // cleanup runtime (but NOT cell dir or IP — those persist)
+    // cleanup runtime (but NOT env dir or IP — those persist)
     std::fs::remove_file(rt.join("ip")).ok(); // may not exist
 
     Ok(())
@@ -310,20 +328,20 @@ pub fn delete(name: &str) -> Result<()> {
         stop(name)?;
     }
 
-    // remove cell directory
-    let dir = cell_dir(name);
+    // remove env directory
+    let dir = env_dir(name);
     if dir.exists() {
         let status = Command::new("sudo")
             .args(["rm", "-rf", &dir.to_string_lossy()])
             .status()
-            .context("failed to remove cell dir")?;
+            .context("failed to remove env dir")?;
         if !status.success() {
-            anyhow::bail!("failed to remove cell dir at {}", dir.display());
+            anyhow::bail!("failed to remove env dir at {}", dir.display());
         }
     }
 
     // remove microvm-managed dir too — without this, var.img survives
-    // a vitro remove and a future cell start reuses it. Manifests as
+    // a vitro remove and a future env start reuses it. Manifests as
     // "vm.varSize change didn't take effect".
     let microvm_dir = std::path::PathBuf::from(format!("/var/lib/microvms/{name}"));
     if microvm_dir.exists() {
@@ -337,7 +355,7 @@ pub fn delete(name: &str) -> Result<()> {
     }
 
     // release IP
-    cell::release_ip(name);
+    env::release_ip(name);
 
     // cleanup runtime dir
     let rt = runtime_dir(name);
@@ -370,7 +388,7 @@ fn wait_for_vm(target: &str, workspace: &str) -> Result<()> {
     anyhow::bail!("VM did not become reachable within 60s")
 }
 
-/// Captured output from running a non-interactive command in a cell.
+/// Captured output from running a non-interactive command in an env.
 pub struct CapturedShell {
     pub exit_code: i32,
     pub stdout: String,
@@ -378,13 +396,13 @@ pub struct CapturedShell {
     pub duration_ms: u64,
 }
 
-/// Run a single command in a cell and capture its output. Used by
+/// Run a single command in an env and capture its output. Used by
 /// `vitro shell -c "..." --json`.
 #[instrument]
 pub fn shell_capture(name: &str, command: &str) -> Result<CapturedShell> {
     let (_, target) = ssh_target(name)?;
     let repo_name = std::fs::read_to_string(runtime_dir(name).join("repo"))
-        .unwrap_or_else(|_| "cell".to_string()).trim().to_string();
+        .unwrap_or_else(|_| "env".to_string()).trim().to_string();
     let workspace = format!("/{repo_name}");
 
     wait_for_vm(&target, &workspace)?;
@@ -417,14 +435,14 @@ pub fn shell_capture(name: &str, command: &str) -> Result<CapturedShell> {
 }
 
 /// Pipe stdin/stdout/stderr through to a command running inside the
-/// cell. No PTY, no spinner, no log file. Stdin from the parent is
+/// env. No PTY, no spinner, no log file. Stdin from the parent is
 /// inherited (Rust's default) so JSON-RPC frames travel transparently.
 /// Exit code propagates.
 #[instrument]
 pub fn acp_forward(name: &str, command: &str) -> Result<()> {
     let (_, target) = ssh_target(name)?;
     let repo_name = std::fs::read_to_string(runtime_dir(name).join("repo"))
-        .unwrap_or_else(|_| "cell".to_string()).trim().to_string();
+        .unwrap_or_else(|_| "env".to_string()).trim().to_string();
     let workspace = format!("/{repo_name}");
 
     wait_for_vm(&target, &workspace)?;
@@ -455,11 +473,12 @@ pub fn acp_forward(name: &str, command: &str) -> Result<()> {
 pub fn shell(
     name: &str,
     command: Option<&str>,
+    session: Option<&str>,
 ) -> Result<()> {
     let (_, target) = ssh_target(name)?;
 
     let repo_name = std::fs::read_to_string(runtime_dir(name).join("repo"))
-        .unwrap_or_else(|_| "cell".to_string()).trim().to_string();
+        .unwrap_or_else(|_| "env".to_string()).trim().to_string();
     let workspace = format!("/{repo_name}");
 
     let sp = indicatif::ProgressBar::new_spinner();
@@ -476,7 +495,7 @@ pub fn shell(
     wait_result?;
 
     // apply synced files from host-side sync dir to VM home
-    let sync_dir = format!("/var/lib/vitro/cells/{name}/sync");
+    let sync_dir = format!("/var/lib/vitro/envs/{name}/sync");
     if Path::new(&sync_dir).exists() {
         let scp_result = Command::new("scp")
             .args([
@@ -495,12 +514,25 @@ pub fn shell(
         }
     }
 
-    let (use_pty, cmd) = match command {
-        Some(c) => {
+    let (use_pty, cmd) = match (command, session) {
+        (None, None) => {
+            // interactive shell without explicit session -> default session
+            let inner = format!("cd {} && exec $SHELL -l", crate::exec::shell_escape(&workspace));
+            (true, crate::session::dtach_attach(name, "default", &inner))
+        }
+        (Some(c), None) => {
+            // one-shot command, no session -> direct SSH
             let script = format!("cd {} && {}", crate::exec::shell_escape(&workspace), c);
             (false, format!("sh -c {}", crate::exec::shell_escape(&script)))
         }
-        None => (true, format!("cd {} && exec $SHELL -l", crate::exec::shell_escape(&workspace))),
+        (_, Some(s)) => {
+            // named session (interactive or command) -> dtach attach/create
+            let inner = match command {
+                Some(c) => format!("cd {} && {}", crate::exec::shell_escape(&workspace), c),
+                None => format!("cd {} && exec $SHELL -l", crate::exec::shell_escape(&workspace)),
+            };
+            (true, crate::session::dtach_attach(name, s, &inner))
+        }
     };
 
     let mut ssh = Command::new("ssh");
@@ -530,13 +562,13 @@ pub fn shell(
 
 // Proxy control API
 
-fn register_proxy_rules(ip: &str, branch: &str, config: &CellConfig) -> Result<()> {
+fn register_proxy_rules(ip: &str, env_name: &str, config: &EnvConfig) -> Result<()> {
     let mut body = serde_json::json!({
-        "cellIp": ip,
-        "branchId": branch,
+        "envIp": ip,
+        "envId": env_name,
     });
 
-    // add cell-level egress rules
+    // add env-level egress rules
     let egress = &config.egress;
     if egress.writes.is_some() || egress.reads.is_some() || !egress.credentials.is_empty() {
         let mut egress_json = serde_json::json!({ "additive": true });
@@ -570,7 +602,7 @@ fn register_proxy_rules(ip: &str, branch: &str, config: &CellConfig) -> Result<(
             "-X", "POST",
             "-H", "Content-Type: application/json",
             "-d", &body.to_string(),
-            &format!("{PROXY_CONTROL}/cells"),
+            &format!("{PROXY_CONTROL}/envs"),
         ])
         .output()
         .context("failed to register proxy rules")?;
@@ -586,7 +618,7 @@ fn deregister_proxy_rules(ip: &str) -> Result<()> {
         .args([
             "-sf",
             "-X", "DELETE",
-            &format!("{PROXY_CONTROL}/cells/{ip}"),
+            &format!("{PROXY_CONTROL}/envs/{ip}"),
         ])
         .output()
         .context("failed to deregister proxy rules")?;
@@ -621,12 +653,12 @@ fn sanitize_dns(s: &str) -> String {
     result.trim_end_matches('-').to_string()
 }
 
-pub fn dns_hostname(branch: &str, repo: &str) -> String {
-    format!("{}.{}.cell", sanitize_dns(branch), sanitize_dns(repo))
+pub fn dns_hostname(env_name: &str, repo: &str) -> String {
+    format!("{}.{}.env", sanitize_dns(env_name), sanitize_dns(repo))
 }
 
-fn register_dns(branch: &str, repo: &str, ip: &str) {
-    let hostname = dns_hostname(branch, repo);
+fn register_dns(env_name: &str, repo: &str, ip: &str) {
+    let hostname = dns_hostname(env_name, repo);
     let entry = format!("{ip} {hostname}");
     let hosts = std::fs::read_to_string(DNS_HOSTS).unwrap_or_default();
     if !hosts.contains(&entry) {
@@ -647,8 +679,8 @@ fn register_dns(branch: &str, repo: &str, ip: &str) {
     info!(hostname = %hostname, "registered DNS");
 }
 
-fn deregister_dns(branch: &str, repo: &str) {
-    let hostname = dns_hostname(branch, repo);
+fn deregister_dns(env_name: &str, repo: &str) {
+    let hostname = dns_hostname(env_name, repo);
     if let Ok(hosts) = std::fs::read_to_string(DNS_HOSTS) {
         let updated: String = hosts
             .lines()
@@ -690,7 +722,7 @@ mod tests {
 
     #[test]
     fn sanitize_uppercase() {
-        assert_eq!(sanitize_dns("MyBranch"), "mybranch");
+        assert_eq!(sanitize_dns("MyEnv"), "myenv");
     }
 
     #[test]
@@ -706,29 +738,29 @@ mod tests {
 
     #[test]
     fn dns_hostname_basic() {
-        assert_eq!(dns_hostname("feat", "myapp"), "feat.myapp.cell");
+        assert_eq!(dns_hostname("feat", "myapp"), "feat.myapp.env");
     }
 
     #[test]
     fn dns_hostname_complex() {
-        assert_eq!(dns_hostname("feature/auth", "my-app"), "feature-auth.my-app.cell");
+        assert_eq!(dns_hostname("feature/auth", "my-app"), "feature-auth.my-app.env");
     }
 
-    // Cell path construction
+    // Env path construction
 
     #[test]
-    fn cell_dir_path() {
-        assert_eq!(cell_dir("myapp-feat"), PathBuf::from("/var/lib/vitro/cells/myapp-feat"));
-    }
-
-    #[test]
-    fn cell_repo_dir_path() {
-        assert_eq!(cell_repo_dir("myapp-feat"), PathBuf::from("/var/lib/vitro/cells/myapp-feat/repo"));
+    fn env_dir_path() {
+        assert_eq!(env_dir("myapp-feat"), PathBuf::from("/var/lib/vitro/envs/myapp-feat"));
     }
 
     #[test]
-    fn cell_flake_dir_path() {
-        assert_eq!(cell::cell_flake_dir("myapp-feat"), PathBuf::from("/var/lib/vitro/cells/myapp-feat/flake"));
+    fn env_repo_dir_path() {
+        assert_eq!(env_repo_dir("myapp-feat"), PathBuf::from("/var/lib/vitro/envs/myapp-feat/repo"));
+    }
+
+    #[test]
+    fn env_flake_dir_path() {
+        assert_eq!(env::env_flake_dir("myapp-feat"), PathBuf::from("/var/lib/vitro/envs/myapp-feat/flake"));
     }
 
     // IP pool (using temp files)
@@ -736,8 +768,8 @@ mod tests {
     #[test]
     fn ip_pool_roundtrip() {
         let mut pool = std::collections::HashMap::new();
-        pool.insert("cell-a".to_string(), "192.168.83.11".to_string());
-        pool.insert("cell-b".to_string(), "192.168.83.12".to_string());
+        pool.insert("env-a".to_string(), "192.168.83.11".to_string());
+        pool.insert("env-b".to_string(), "192.168.83.12".to_string());
 
         let json = serde_json::to_string_pretty(&pool).unwrap();
         let loaded: std::collections::HashMap<String, String> = serde_json::from_str(&json).unwrap();
@@ -766,28 +798,5 @@ mod tests {
         // verify range is .11 to .254 (244 addresses)
         let count = (11..=254u16).count();
         assert_eq!(count, 244);
-    }
-
-    // Flake generation
-
-    #[test]
-    fn generated_flake_contains_name() {
-        let tmpdir = std::env::temp_dir().join("vitro-test-flake");
-        let _ = std::fs::remove_dir_all(&tmpdir);
-        std::fs::create_dir_all(tmpdir.join("flake")).unwrap();
-
-        // we can't call generate_flake directly (uses CELLS_PATH),
-        // but we can test the format string logic
-        let name = "myapp-feat";
-        let ip = "192.168.83.11";
-        let cell_dir = "/var/lib/vitro/cells/myapp-feat";
-
-        let flake = format!(
-            "name = \"{name}\"; ip = \"{ip}\"; cellDir = \"{cell_dir}\";",
-        );
-        assert!(flake.contains("myapp-feat"));
-        assert!(flake.contains("192.168.83.11"));
-
-        let _ = std::fs::remove_dir_all(&tmpdir);
     }
 }

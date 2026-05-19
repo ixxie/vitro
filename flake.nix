@@ -51,7 +51,7 @@
           nativeBuildInputs = (commonArgs.nativeBuildInputs or []) ++ [pkgs.makeWrapper];
           postInstall = ''
             wrapProgram $out/bin/vitro \
-              --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.age pkgs.openssh]}
+              --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.age pkgs.openssh pkgs.autossh]}
             wrapProgram $out/bin/git-remote-vitro \
               --prefix PATH : ${pkgs.lib.makeBinPath [pkgs.age pkgs.openssh]}
           '';
@@ -82,7 +82,8 @@
     )
     // {
       lib.mkHost = import ./nix/lib/mkHost.nix;
-      lib.mkCell = import ./nix/lib/mkCell.nix;
+      lib.mkEnv = import ./nix/lib/mkEnv.nix;
+      lib.mkCell = import ./nix/lib/mkCell.nix; # kept for compatibility
 
       nixosModules.server = {
         config,

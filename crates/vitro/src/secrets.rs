@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use tracing::warn;
 
-use crate::config::CellConfig;
+use crate::config::EnvConfig;
 
 fn secrets_age_path(repo_root: &Path) -> PathBuf {
     repo_root.join(".vitro/secrets.age")
@@ -64,7 +64,7 @@ fn decrypt(age_file: &Path) -> Result<String> {
 /// client-side; the resulting plaintext is meant to be pushed to the
 /// host over an already-trusted channel (SSH) — the host never needs to
 /// be a recipient of `secrets.age`.
-pub fn decrypt_content(repo_root: &Path, config: &CellConfig) -> Result<Option<String>> {
+pub fn decrypt_content(repo_root: &Path, config: &EnvConfig) -> Result<Option<String>> {
     if let Some(ref cmd) = config.secrets.command {
         let output = Command::new("sh")
             .args(["-c", cmd])
@@ -87,7 +87,7 @@ pub fn decrypt_content(repo_root: &Path, config: &CellConfig) -> Result<Option<S
 
 /// Decrypt and write `/var/lib/vitro/secrets.env` locally (used by
 /// LocalTransport — there the laptop and the host are the same machine).
-pub fn resolve_local(repo_root: &Path, config: &CellConfig) -> Result<Option<PathBuf>> {
+pub fn resolve_local(repo_root: &Path, config: &EnvConfig) -> Result<Option<PathBuf>> {
     match decrypt_content(repo_root, config)? {
         Some(content) => {
             let out = PathBuf::from("/var/lib/vitro/secrets.env");

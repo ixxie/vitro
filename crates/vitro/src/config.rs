@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct CellConfig {
+pub struct EnvConfig {
     #[serde(default = "default_memory")]
     pub memory: String,
     #[serde(default = "default_vcpu")]
@@ -13,21 +13,41 @@ pub struct CellConfig {
     #[serde(default)]
     pub server: Option<String>,
     #[serde(default)]
-    pub post_push: Option<String>,
-    #[serde(default)]
     pub secrets: SecretsConfig,
     #[serde(default)]
-    pub egress: CellEgressConfig,
+    pub egress: EnvEgressConfig,
     #[serde(default)]
-    pub acp: Option<AcpConfig>,
+    pub session: Option<SessionConfig>,
+    #[serde(default)]
+    pub persist: Vec<PersistConfig>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
-pub struct AcpConfig {
-    /// Command + args that produce an ACP (JSON-RPC over stdio) server
-    /// when invoked inside the cell. Run by `vitro acp <cell>` which
-    /// forwards stdin/stdout to the spawning ACP client (e.g. Paseo).
+pub struct SessionConfig {
+    /// Command + args to run as the long-lived in-env agent session.
     pub command: Vec<String>,
+    #[serde(default)]
+    pub hook: Vec<HookConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct HookConfig {
+    /// Trigger type: "match", "idle", "exit", "start"
+    pub on: String,
+    /// Regex pattern (required for `on = "match"`)
+    pub pattern: Option<String>,
+    /// Duration string for idle trigger (e.g. "10m")
+    pub after: Option<String>,
+    /// Script path (relative to repo root) to execute
+    pub run: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct PersistConfig {
+    /// Absolute path inside the env to persist across restarts
+    pub path: String,
+    /// Human-readable description of what this stores
+    pub purpose: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
@@ -38,17 +58,17 @@ pub struct SecretsConfig {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
-pub struct CellEgressConfig {
+pub struct EnvEgressConfig {
     #[serde(default)]
-    pub writes: Option<CellEgressRules>,
+    pub writes: Option<EnvEgressRules>,
     #[serde(default)]
-    pub reads: Option<CellEgressRules>,
+    pub reads: Option<EnvEgressRules>,
     #[serde(default)]
     pub credentials: Vec<CredentialConfig>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone)]
-pub struct CellEgressRules {
+pub struct EnvEgressRules {
     pub allowed: Option<Vec<String>>,
     pub denied: Option<Vec<String>>,
 }
@@ -63,28 +83,28 @@ pub struct CredentialConfig {
 fn default_memory() -> String { "2G".to_string() }
 fn default_vcpu() -> u32 { 2 }
 
-impl Default for CellConfig {
+impl Default for EnvConfig {
     fn default() -> Self {
         Self {
             memory: default_memory(),
             vcpu: default_vcpu(),
             ports: Vec::new(),
             server: None,
-            post_push: None,
             secrets: SecretsConfig::default(),
-            egress: CellEgressConfig::default(),
-            acp: None,
+            egress: EnvEgressConfig::default(),
+            session: None,
+            persist: Vec::new(),
         }
     }
 }
 
-pub fn load(repo_root: &Path) -> Result<CellConfig> {
+pub fn load(repo_root: &Path) -> Result<EnvConfig> {
     let config_path = repo_root.join(".vitro/config.toml");
     if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)
             .context("reading config")?;
         toml::from_str(&content).context("parsing config")
     } else {
-        Ok(CellConfig::default())
+        Ok(EnvConfig::default())
     }
 }

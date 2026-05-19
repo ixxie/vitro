@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
-const CELLS_PATH: &str = "/var/lib/vitro/cells";
+const ENVS_PATH: &str = "/var/lib/vitro/envs";
 const IP_POOL: &str = "/var/lib/vitro/ip-pool.json";
 
 // IP pool
@@ -21,12 +21,12 @@ pub fn allocate_ip(name: &str) -> Result<String> {
         if !used.contains(ip.as_str()) {
             pool.insert(name.to_string(), ip.clone());
             save_ip_pool(&pool);
-            info!(ip = %ip, cell = %name, "allocated IP");
+            info!(ip = %ip, env = %name, "allocated IP");
             return Ok(ip);
         }
     }
 
-    anyhow::bail!("IP pool exhausted (244 cells max)")
+    anyhow::bail!("IP pool exhausted (244 envs max)")
 }
 
 pub fn release_ip(name: &str) {
@@ -51,16 +51,16 @@ fn save_ip_pool(pool: &HashMap<String, String>) {
 
 // Path helpers
 
-pub fn cell_dir(name: &str) -> PathBuf {
-    PathBuf::from(CELLS_PATH).join(name)
+pub fn env_dir(name: &str) -> PathBuf {
+    PathBuf::from(ENVS_PATH).join(name)
 }
 
-pub fn cell_repo_dir(name: &str) -> PathBuf {
-    cell_dir(name).join("repo")
+pub fn env_repo_dir(name: &str) -> PathBuf {
+    env_dir(name).join("repo")
 }
 
-pub fn cell_flake_dir(name: &str) -> PathBuf {
-    cell_dir(name).join("flake")
+pub fn env_flake_dir(name: &str) -> PathBuf {
+    env_dir(name).join("flake")
 }
 
 pub fn runtime_dir(name: &str) -> PathBuf {
@@ -76,8 +76,8 @@ pub fn runtime_dir(name: &str) -> PathBuf {
     dir
 }
 
-pub fn list_cells() -> Result<Vec<String>> {
-    let dir = PathBuf::from(CELLS_PATH);
+pub fn list_envs() -> Result<Vec<String>> {
+    let dir = PathBuf::from(ENVS_PATH);
     if !dir.exists() {
         return Ok(Vec::new());
     }
@@ -93,4 +93,3 @@ pub fn list_cells() -> Result<Vec<String>> {
     names.sort();
     Ok(names)
 }
-

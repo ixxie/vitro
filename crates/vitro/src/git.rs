@@ -1,24 +1,9 @@
 use anyhow::{Context, Result};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::config::CellConfig;
-
-fn data_dir(repo_root: &Path) -> PathBuf {
-    let base = std::env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").expect("HOME not set");
-            PathBuf::from(home).join(".local/share")
-        });
-    let mut hasher = DefaultHasher::new();
-    repo_root.hash(&mut hasher);
-    let hash = format!("{:016x}", hasher.finish());
-    base.join("vitro").join(hash)
-}
+use crate::config::EnvConfig;
 
 pub struct Repo {
     root: PathBuf,
@@ -37,10 +22,6 @@ impl Repo {
         Ok(Self {
             root: PathBuf::from(root),
         })
-    }
-
-    pub fn from_root(root: PathBuf) -> Self {
-        Self { root }
     }
 
     pub fn root(&self) -> &Path {
@@ -86,70 +67,6 @@ impl Repo {
         Ok((ahead, behind))
     }
 
-    pub fn branch_exists(&self, name: &str) -> bool {
-        Command::new("git")
-            .args([
-                "show-ref",
-                "--verify",
-                "--quiet",
-                &format!("refs/heads/{name}"),
-            ])
-            .current_dir(&self.root)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-
-    pub fn create_branch(&self, name: &str) -> Result<()> {
-        let status = Command::new("git")
-            .args(["branch", name])
-            .current_dir(&self.root)
-            .status()
-            .context("creating branch")?;
-        if !status.success() {
-            anyhow::bail!("failed to create branch '{name}'");
-        }
-        Ok(())
-    }
-
-    pub fn delete_branch(&self, name: &str) -> Result<()> {
-        let status = Command::new("git")
-            .args(["branch", "-D", name])
-            .current_dir(&self.root)
-            .status()
-            .context("deleting branch")?;
-        if !status.success() {
-            anyhow::bail!("failed to delete branch '{name}'");
-        }
-        Ok(())
-    }
-
-    // Worktree management
-
-    pub fn worktree_add(&self, path: &Path, branch: &str) -> Result<()> {
-        let status = Command::new("git")
-            .args(["worktree", "add", path.to_str().unwrap(), branch])
-            .current_dir(&self.root)
-            .status()
-            .context("adding worktree")?;
-        if !status.success() {
-            anyhow::bail!("failed to add worktree for branch '{branch}'");
-        }
-        Ok(())
-    }
-
-    pub fn worktree_remove(&self, path: &Path) -> Result<()> {
-        let status = Command::new("git")
-            .args(["worktree", "remove", "--force", path.to_str().unwrap()])
-            .current_dir(&self.root)
-            .status()
-            .context("removing worktree")?;
-        if !status.success() {
-            anyhow::bail!("failed to remove worktree at '{}'", path.display());
-        }
-        Ok(())
-    }
-
     // Remote management
 
     pub fn add_vitro_remote(&self, url: &str) -> Result<()> {
@@ -177,108 +94,26 @@ impl Repo {
         Ok(())
     }
 
-    // Clone management (coexists with worktree management)
-
-    fn clone_path(&self, name: &str) -> PathBuf {
-        data_dir(&self.root).join(name)
-    }
-
-    pub fn init_clone(&self, name: &str, _config: &CellConfig) -> Result<PathBuf> {
-        let clone = self.clone_path(name);
-        if clone.exists() {
-            return Ok(clone);
-        }
-
-        std::fs::create_dir_all(&clone)?;
-
-        let root_str = self.root.to_string_lossy();
-        let cmds: &[&[&str]] = &[
-            &["init", clone.to_str().unwrap()],
-            &[
-                "-C",
-                clone.to_str().unwrap(),
-                "remote",
-                "add",
-                "origin",
-                &root_str,
-            ],
-            &["-C", clone.to_str().unwrap(), "fetch", "origin", name],
-            &[
-                "-C",
-                clone.to_str().unwrap(),
-                "checkout",
-                "-b",
-                name,
-                &format!("origin/{name}"),
-            ],
-            &[
-                "-C",
-                clone.to_str().unwrap(),
-                "config",
-                "receive.denyCurrentBranch",
-                "updateInstead",
-            ],
-        ];
-
-        for args in cmds {
-            let status = Command::new("git").args(*args).status()?;
-            if !status.success() {
-                std::fs::remove_dir_all(&clone).ok();
-                anyhow::bail!("failed to init clone for '{name}': git {:?}", args);
-            }
-        }
-
-        Ok(clone)
-    }
-
-    pub fn list_clones(&self) -> Result<Vec<String>> {
-        let dir = data_dir(&self.root);
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut names = Vec::new();
-        for entry in std::fs::read_dir(&dir)? {
-            let entry = entry?;
-            if entry.file_type()?.is_dir() {
-                let name = entry.file_name();
-                if let Some(s) = name.to_str() {
-                    if s != "meta" {
-                        names.push(s.to_string());
-                    }
-                }
-            }
-        }
-        names.sort();
-        Ok(names)
-    }
-
-    /// Resolve the cell repo path for the git-remote-vitro helper.
-    /// Checks current branch first, then scans all clones.
-    pub fn resolve_cell_path(&self) -> Result<PathBuf> {
-        // try current branch first
-        let branch = self.current_branch()?;
-        if crate::vm::is_running(&branch).unwrap_or(false) {
-            return Ok(crate::vm::cell_repo_dir(&branch));
-        }
-
-        // scan all clones for a running cell
-        for name in self.list_clones()? {
+    /// Resolve the env repo path for the git-remote-vitro helper.
+    /// Finds a running local env; falls back to the first env dir.
+    pub fn resolve_env_path(&self) -> Result<PathBuf> {
+        for name in crate::vm::list_envs().unwrap_or_default() {
             if crate::vm::is_running(&name).unwrap_or(false) {
-                return Ok(crate::vm::cell_repo_dir(&name));
+                return Ok(crate::vm::env_repo_dir(&name));
             }
         }
 
-        anyhow::bail!("no active cell — use 'vitro create' or 'vitro run' first")
+        anyhow::bail!("no active env — use 'vitro create' first")
     }
 }
 
-// Server-side clone management — clones live inside cell dirs
+// Server-side clone management — clones live inside env dirs
 
 pub fn server_clone_path(name: &str) -> PathBuf {
-    crate::vm::cell_repo_dir(name)
+    crate::vm::env_repo_dir(name)
 }
 
-pub fn init_clone_server(name: &str, _config: &CellConfig) -> Result<PathBuf> {
+pub fn init_clone_server(name: &str, _config: &EnvConfig) -> Result<PathBuf> {
     let clone = server_clone_path(name);
     if clone.join(".git").exists() {
         return Ok(clone);
@@ -288,15 +123,14 @@ pub fn init_clone_server(name: &str, _config: &CellConfig) -> Result<PathBuf> {
         std::fs::remove_dir_all(&clone).ok();
     }
 
-    // ensure cell dir exists
-    let cell = crate::vm::cell_dir(name);
-    std::fs::create_dir_all(&cell)?;
+    // ensure env dir exists
+    let env_dir = crate::vm::env_dir(name);
+    std::fs::create_dir_all(&env_dir)?;
     std::fs::create_dir_all(&clone)?;
 
     let clone_str = clone.to_str().unwrap();
     let cmds: &[&[&str]] = &[
-        &["init", clone_str],
-        &["-C", clone_str, "checkout", "-b", name],
+        &["init", "-b", "main", clone_str],
         &["-C", clone_str, "config", "receive.denyCurrentBranch", "updateInstead"],
     ];
 
@@ -310,9 +144,9 @@ pub fn init_clone_server(name: &str, _config: &CellConfig) -> Result<PathBuf> {
 
     install_chown_hook(&clone)?;
 
-    // set ownership to cell user (uid 1000)
+    // set ownership to env user (uid 1000)
     Command::new("chown")
-        .args(["-R", "1000:users", &cell.to_string_lossy()])
+        .args(["-R", "1000:users", &env_dir.to_string_lossy()])
         .status()
         .ok();
 
@@ -349,4 +183,3 @@ pub fn ensure_gitignore_entry(repo_root: &Path, entry: &str) -> Result<()> {
     writeln!(f, "{entry}")?;
     Ok(())
 }
-

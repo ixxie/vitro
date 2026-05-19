@@ -3,11 +3,11 @@
   lib,
   pkgs,
   vitroHost,
-  cell,
+  env,
   ...
 }: let
   inherit (vitroHost) bridge proxy user;
-  workspace = "/${cell.repo}";
+  workspace = "/${env.repo}";
 in {
   system.stateVersion = "24.11";
 
@@ -147,6 +147,7 @@ in {
       git
       curl
       jq
+      dtach
     ];
 
     variables = {

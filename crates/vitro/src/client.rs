@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use tracing::{warn, instrument};
 
-use crate::config::CellConfig;
+use crate::config::EnvConfig;
 use crate::ssh;
 
 const CONTROL_PORT: u32 = 8082;
@@ -21,7 +21,7 @@ pub struct UpResponse {
 }
 
 #[derive(serde::Deserialize)]
-pub struct CellStatus {
+pub struct EnvStatus {
     pub name: String,
     pub status: String,
     pub ip: Option<String>,
@@ -62,7 +62,7 @@ impl Client {
         })
     }
 
-    pub fn prepare(&self, name: &str, repo: &str, config: &CellConfig) -> Result<()> {
+    pub fn prepare(&self, name: &str, repo: &str, config: &EnvConfig) -> Result<()> {
         let body = serde_json::json!({
             "name": name,
             "repo": repo,
@@ -75,7 +75,7 @@ impl Client {
         Ok(())
     }
 
-    pub fn up(&self, name: &str, repo: &str, create: bool, config: &CellConfig) -> Result<UpResponse> {
+    pub fn up(&self, name: &str, repo: &str, create: bool, config: &EnvConfig) -> Result<UpResponse> {
         let body = serde_json::json!({
             "name": name,
             "repo": repo,
@@ -109,17 +109,23 @@ impl Client {
         Ok(())
     }
 
-    pub fn list(&self) -> Result<Vec<CellStatus>> {
+    pub fn list(&self) -> Result<Vec<EnvStatus>> {
         let resp = self.request("GET", "/list", None)?;
         serde_json::from_str(&resp).context(format!("bad response: {resp}"))
     }
 
     /// SSH hop for shell or command execution
-    pub fn shell(&self, name: &str, command: Option<&str>) -> Result<()> {
+    pub fn shell(&self, name: &str, command: Option<&str>, session: Option<&str>) -> Result<()> {
         let target = &self.user_host;
         let remote_cmd = match command {
-            Some(cmd) => crate::exec::vitro_hop(name, cmd),
-            None => format!("vitro shell --server {}", name),
+            Some(cmd) => crate::exec::vitro_hop(name, cmd, session),
+            None => {
+                let mut s = format!("vitro shell --server {}", name);
+                if let Some(sess) = session {
+                    s.push_str(&format!(" --session {}", crate::exec::shell_escape(sess)));
+                }
+                s
+            }
         };
         let status = std::process::Command::new("ssh")
             .args([
@@ -139,10 +145,10 @@ impl Client {
         Ok(())
     }
 
-    /// SSH hop with captured output. Mirrors vm::shell_capture for remote cells.
+    /// SSH hop with captured output. Mirrors vm::shell_capture for remote envs.
     pub fn shell_capture(&self, name: &str, command: &str) -> Result<crate::vm::CapturedShell> {
         let target = &self.user_host;
-        let remote_cmd = crate::exec::vitro_hop(name, command);
+        let remote_cmd = crate::exec::vitro_hop(name, command, None);
         let start = std::time::Instant::now();
         let output = std::process::Command::new("ssh")
             .args([
@@ -170,7 +176,7 @@ impl Client {
     /// corrupted by terminal modes) and no `-t`.
     pub fn acp_forward(&self, name: &str, command: &str) -> Result<()> {
         let target = &self.user_host;
-        let remote_cmd = crate::exec::vitro_hop(name, command);
+        let remote_cmd = crate::exec::vitro_hop(name, command, None);
         let status = std::process::Command::new("ssh")
             .args([
                 "-A",
@@ -203,26 +209,26 @@ impl Client {
         Ok(())
     }
 
-    /// Push plaintext secrets into the cell at `/var/lib/vitro/secrets.env`
+    /// Push plaintext secrets into the env at `/var/lib/vitro/secrets.env`
     /// so the ACP agent can source them. Uses `vitro shell --server` to hop
-    /// from host into the cell.
-    pub fn push_secrets_cell(&self, name: &str, content: &str) -> Result<()> {
+    /// from host into the env.
+    pub fn push_secrets_env(&self, name: &str, content: &str) -> Result<()> {
         // Encode content as \xHH hex escapes so no shell metacharacters leak.
         let hex: String = content.as_bytes().iter()
             .map(|b| format!("\\x{:02x}", b))
             .collect();
-        let cell_cmd = format!("printf '{}' > /var/lib/vitro/secrets.env && chmod 600 /var/lib/vitro/secrets.env", hex);
-        let host_cmd = crate::exec::vitro_hop(name, &cell_cmd);
+        let env_cmd = format!("printf '{}' > /var/lib/vitro/secrets.env && chmod 600 /var/lib/vitro/secrets.env", hex);
+        let host_cmd = crate::exec::vitro_hop(name, &env_cmd, None);
         let (stdout, exit_code) = self.rt.block_on(async {
             self.session.exec(&host_cmd).await
-        }).context("push_secrets_cell failed")?;
+        }).context("push_secrets_env failed")?;
         if exit_code != 0 {
-            warn!("push_secrets_cell exited {exit_code}: {stdout}");
+            anyhow::bail!("push_secrets_env exited {exit_code}: {stdout}");
         }
         Ok(())
     }
 
-    /// Sync local files to the cell on the server
+    /// Sync local files to the env on the server
     #[instrument(skip(self, paths))]
     pub fn sync_files(&self, name: &str, paths: &[String]) -> Result<()> {
         let home = std::env::var("HOME").unwrap_or_default();
@@ -247,7 +253,7 @@ impl Client {
                 continue;
             };
 
-            let dest = format!("/var/lib/vitro/cells/{name}/sync/{rel}");
+            let dest = format!("/var/lib/vitro/envs/{name}/sync/{rel}");
 
             self.rt.block_on(async {
                 if let Some(parent) = std::path::Path::new(&dest).parent() {
@@ -266,7 +272,7 @@ impl Client {
 
         self.rt.block_on(async {
             self.session.exec(&format!(
-                "chown -R 1000:users /var/lib/vitro/cells/{name}/sync/ 2>/dev/null"
+                "chown -R 1000:users /var/lib/vitro/envs/{name}/sync/ 2>/dev/null"
             )).await.ok();
         });
 
