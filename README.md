@@ -1,70 +1,61 @@
 # vitro
 
-Sandboxed execution for autonomous coding agents. Each task runs in an
-isolated NixOS microVM (a "cell") with proxy-mediated egress and injected
-credentials. Secrets never enter the cell. Outbound writes are
-allowlisted by domain.
+Sandboxed microVM environments for autonomous coding agents. Each env runs
+a NixOS guest with filesystem isolation, proxy-mediated egress, and
+host-injected credentials. Secrets never enter the env; outbound writes
+are domain-allowlisted; reads stay open by default.
 
 > [!WARNING]
-> Vitro is experimental. The security model is sound in design but the
+> Vitro is experimental. The security model is sound by design but the
 > implementation is under active development and has not been audited.
 > Do not rely on it for production security without independent review.
 
 ## What it solves
 
-Fully autonomous agents that possess the [lethal trifecta][trifecta] —
-access to private data, exposure to untrusted content, and the ability
-to communicate externally — pose a serious security risk. Vitro keeps
-the three from coexisting inside any one execution context.
+Autonomous agents that hold the [lethal trifecta][trifecta] — access to
+private data, exposure to untrusted content, and the ability to
+communicate externally — pose a serious security risk. Vitro keeps the
+three from coexisting inside any one execution context.
 
 [trifecta]: https://simonwillison.net/2025/Jun/16/the-lethal-trifecta/
 
-- **Secret exfiltration.** Secrets never enter the cell; the proxy
-  injects credentials into outbound requests on the fly.
-- **Filesystem damage.** Each cell is a NixOS microVM with its own
-  filesystem. Only the repo is mounted; no host access, no sudo.
-- **Uncontrolled egress.** POSTs go through an allowlist by domain;
-  reads stay open by default.
+- **Secret exfiltration.** Credentials are injected by the host proxy
+  into outbound requests; the agent only ever sees placeholder values.
+- **Filesystem damage.** Each env is a NixOS microVM. Only the repo is
+  mounted in; no host access, no sudo, no privileged tooling.
+- **Uncontrolled egress.** POSTs go through a per-env allowlist; reads
+  stay open by default. Anything that doesn't match returns 403 with a
+  human-readable reason.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    laptop["Laptop<br/>(planning)"]
-    source[Task source]
-    cell["Vitro cell<br/>(autonomous flow)"]
-    output["Branch + comment"]
-    laptop --> source --> cell --> output
-    output -->|review · merge · or kick back| laptop
+    subgraph env ["Env · microVM"]
+        agent["Agent (e.g. claude)"]
+        repo["/repo (virtiofs)<br/>writable"]
+        agent --- repo
+    end
+    subgraph host ["Host (NixOS)"]
+        proxy["mitmproxy<br/>· egress allowlist<br/>· credential injection"]
+        secrets["/var/lib/vitro/secrets.env"]
+        secrets -.-> proxy
+    end
+    internet[Internet]
+    agent -->|all egress| proxy
+    proxy --> internet
 ```
 
-A cell is the unit of agentic work. What runs inside is the user's
-concern. Vitro provides the sandbox, the proxy, and the I/O surface.
-
-The substrate solves *bounded autonomous tasks*: an agent runs a
-defined piece of work, produces a git branch, exits. Multi-step
-orchestration (retries, validation loops, scheduling) lives in user
-code, not in the substrate.
-
-### Scope
-
-**In core:** microVM lifecycle, egress proxy + credential injection,
-age-based secrets, deploy (`nixos-rebuild` / `nixos-anywhere`), a
-per-cell git remote with worktree workflow, `.cell` DNS tunnels.
-
-**Out of core:** flow engines (transitions, retries, middleware,
-op-level rules), and multi-orchestrator DSLs — user code or any
-ACP-speaking agent runtime handles this. Vitro is runtime-agnostic.
+The agent runtime (claude, openhands, your own script) is your choice;
+vitro provides the sandbox, the proxy, the I/O surface. Persistent
+agent state lives in declared `[[persist]]` mounts so OAuth tokens,
+conversation history, build caches etc. survive env rebuilds.
 
 ## Install
 
 ### Client (your laptop)
 
 ```bash
-# binary (macOS, Linux)
-curl -fsSL https://github.com/ixxie/vitro/releases/latest/download/install.sh | sh
-
-# nix (any OS with nix installed)
 nix profile install github:ixxie/vitro
 ```
 
@@ -74,10 +65,8 @@ NixOS users can opt into the client module:
 vitro.client = {
   enable = true;
   user = "me";
-  server = "prod";
-  vmConfig = ./vm;
-  servers.prod = "root@1.2.3.4";
-  sync = ["~/.claude.json"];
+  server = "grove";
+  servers.grove = "root@1.2.3.4";
 };
 ```
 
@@ -86,7 +75,7 @@ The server registry is declarative — the NixOS module materializes
 
 ```toml
 # ~/.config/vitro/servers.toml
-[prod]
+[grove]
 target = "root@1.2.3.4"
 ```
 
@@ -95,84 +84,192 @@ target = "root@1.2.3.4"
 ### Server
 
 A NixOS module. Use it anywhere you manage NixOS — dotfiles, colmena,
-deploy-rs, or standalone repos.
+deploy-rs, or a dedicated repo.
 
 ```nix
 {
   inputs.vitro.url = "github:ixxie/vitro";
 
   outputs = { nixpkgs, vitro, ... }: {
-    nixosConfigurations.myhost = nixpkgs.lib.nixosSystem {
+    nixosConfigurations.grove = nixpkgs.lib.nixosSystem {
       modules = [
         vitro.nixosModules.server
-        {
-          vitro.server.enable = true;
-          environment.systemPackages = [
-            vitro.packages.x86_64-linux.default
-          ];
-        }
+        { vitro.server.enable = true; }
       ];
     };
   };
 }
 ```
 
-For standalone server repos, `vitro.lib.mkHost` provides a minimal
-wrapper:
+For standalone server repos, `vitro.lib.mkHost` is a minimal wrapper.
+Deploy with `vitro server deploy [host-dir]` — auto-detects whether to
+`nixos-rebuild --target-host` or bootstrap via `nixos-anywhere`.
+
+## Per-repo configuration
+
+Each repo gets a `.vitro/` directory describing its env. Two files
+matter: `config.toml` (resources, egress, secrets, persist) and
+optionally `flake.nix` (guest NixOS module — extra packages, files,
+services).
+
+### Example: vitro's own `.vitro/`
+
+Vitro is developed inside vitro. The repo's own config is the canonical
+example.
+
+`.vitro/config.toml`:
+
+```toml
+memory = "8192M"
+vcpu = 4
+server = "grove"
+
+[egress]
+writes.allowed = [
+    "api.anthropic.com",
+    "statsig.anthropic.com",
+    "platform.claude.com",
+    "api.github.com",
+    "registry.npmjs.org",
+    "openrouter.ai",
+]
+
+[[egress.credentials]]
+host = "openrouter.ai"
+header = "Authorization"
+env_var = "OPENROUTER_API_KEY"
+
+[[egress.credentials]]
+host = "api.github.com"
+header = "Authorization"
+env_var = "GITHUB_TOKEN"
+
+[[persist]]
+path = "/home/agent/.claude"
+purpose = "claude OAuth state and session history"
+
+[[persist]]
+path = "/var/log/vitro"
+purpose = "session log archives"
+
+[secrets]
+keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA…"]
+```
+
+What this declares:
+
+- 8 GB / 4 vCPU env on the `grove` server (`server` resolves via the
+  client registry)
+- Outbound writes (POST/PUT/PATCH/DELETE) only allowed to the listed
+  hosts; reads stay default-open
+- Two credential-injection rules — the proxy adds `Authorization: Bearer
+  $OPENROUTER_API_KEY` (resp. GitHub token) to outbound requests; the
+  agent only sees a placeholder
+- Two paths persisted across env rebuilds via virtiofs shares to host
+  storage
+- An age recipient list for the encrypted `secrets.age` (vitro accepts
+  ssh-ed25519 pubkeys natively)
+
+`.vitro/flake.nix` (optional — guest NixOS module):
 
 ```nix
-vitro.lib.mkHost { inherit vitro nixpkgs disko; } {
-  name = "myhost";
-  disk = ./disk.nix;
-  sshPubkey = "ssh-ed25519 AAAA...";
+{
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+  outputs = { nixpkgs, ... }: {
+    nixosModule = { pkgs, lib, ... }: {
+      # Skip claude's per-tool prompts — the vitro sandbox is the boundary.
+      systemd.services.claude-settings = {
+        wantedBy = [ "multi-user.target" ];
+        after = [ "local-fs.target" ];
+        serviceConfig.Type = "oneshot";
+        script = let
+          settings = builtins.toJSON {
+            permissions.defaultMode = "bypassPermissions";
+            permissions.skipDangerousModePermissionPrompt = true;
+          };
+        in ''
+          mkdir -p /home/agent/.claude
+          echo ${lib.escapeShellArg settings} > /home/agent/.claude/settings.json
+          chown -R agent:users /home/agent/.claude
+        '';
+      };
+    };
+  };
 }
 ```
 
-## Configuration
+Anything valid in a NixOS module works: install packages, mount
+filesystems, drop config files, define systemd units. The module
+composes with vitro's guest base.
 
-Per-repo config lives in `.vitro/config.toml`:
+## Workflow
 
-```toml
-memory = "4096M"
-vcpu = 2
-server = "prod"
-ports = [5173]
-post_push = "bun install"
-
-[secrets]
-keys = ["ssh-ed25519 AAAA..."]
-
-[egress]
-writes.allowed = ["api.linear.app", "api.anthropic.com"]
-
-[[egress.credentials]]
-host = "api.linear.app"
-header = "Authorization"
-env_var = "LINEAR_API_KEY"
+```bash
+vitro create <env>     # provision microvm + seed bare repo from laptop HEAD
+vitro shell <env>      # interactive PTY into the env (ProxyJump via server)
+vitro shell <env> -c "<cmd>"   # one-shot command
+vitro list             # list envs across all known servers
+vitro status <env>     # env state, IP, repo, etc.
+vitro logs <env> [-f]  # tail the env's proxy activity (operator-side, via SSH)
+vitro rebuild <env>    # rebuild microvm derivation (for VM-config changes)
+vitro stop <env>       # stop the VM (data preserved)
+vitro remove <env>     # tear down env entirely
+vitro tunnel <env> -p 5173 [-o]  # forward port from env to laptop
 ```
 
-Server resolution: CLI `-s` > repo `server` > client default > scan
-running cells > localhost.
+Typical session:
+
+```bash
+cd ~/repos/vitro
+vitro create vitro-dev    # ~30s — boots the VM, pushes HEAD
+vitro shell vitro-dev     # drops you into /vitro inside the env
+# inside the env:
+claude                    # already configured with bypassPermissions
+```
+
+### Reload semantics
+
+- **Soft reload — automatic.** Editing `.vitro/config.toml` (egress,
+  credentials) takes effect on the next `vitro shell` or `vitro create`
+  without restarting the VM. No downtime, no process loss.
+- **Hard rebuild — explicit (`vitro rebuild`).** VM-config changes
+  (memory, vcpu, persist paths, `.vitro/flake.nix`) are baked into the
+  microvm derivation. Rebuild reboots the guest — running processes
+  including agent sessions die. Persist mounts and the bare repo
+  survive.
+
+### Git surface
+
+`vitro create` registers a `vitro` git remote pointing at the env's bare
+repo on the server. Use it like any remote:
+
+```bash
+git push vitro              # send laptop work to the env
+git fetch vitro             # pull env-side commits back
+git merge vitro/main        # integrate them
+```
+
+After the initial seed, vitro does *not* auto-push on subsequent shells
+— the env is the source of truth for in-env agent work.
 
 ## Secrets
 
-Vitro manages secrets so they never enter the VM. The proxy reads
-`/var/lib/vitro/secrets.env` on the host and injects credentials into
-outbound requests based on the egress credential rules.
+Encrypted at rest in `.vitro/secrets.age`, decrypted on the laptop using
+one of the recipients listed in `[secrets].keys`, then pushed to the
+server over the SSH session that runs the env. **The host never holds
+an age key**, so adding a new server is `vitro server deploy` — no
+host-pubkey dance.
 
 ```bash
-vitro secrets edit                  # decrypt, edit, re-encrypt
-vitro secrets encrypt               # encrypt .vitro/secrets.env → .age
-vitro secrets decrypt               # decrypt .age → .vitro/secrets.env
+vitro secrets edit         # decrypt → $EDITOR → re-encrypt
+vitro secrets encrypt      # .vitro/secrets.env → .vitro/secrets.age
+vitro secrets decrypt      # .vitro/secrets.age → .vitro/secrets.env (gitignored)
 ```
 
-The encrypted `.vitro/secrets.age` is committed to the repo; the
-plaintext `.vitro/secrets.env` is gitignored. **Decryption happens on
-your laptop** using your SSH key (one of your team's recipients in
-`[secrets].keys`); the resulting plaintext is pushed to the host over
-the same SSH session that runs the cell. The host never holds an age
-key, so adding a new server is just `vitro server deploy`, no
-host-pubkey dance.
+The proxy reads the plaintext envfile on the host and uses it for
+credential injection. Inside the env, secrets never appear as env vars,
+files, or HTTP request bodies — only as injected headers on requests to
+permitted hosts.
 
 For a custom secret manager:
 
@@ -181,298 +278,97 @@ For a custom secret manager:
 command = "sops -d .vitro/secrets.yaml"
 ```
 
-The command must output `KEY=VALUE` lines to stdout.
+The command must output `KEY=VALUE` lines.
 
-## Usage
+## Observability
 
-All commands run from inside a git repo. Each cell is a branch with its
-own isolated VM, local worktree, and the repo mounted at `/<repo-name>`.
+When the proxy blocks a request, the 403 body explains why:
 
-### Branch lifecycle
+```
+Blocked by vitro proxy.
+  env:    vitro-dev
+  host:   platform.claude.com
+  method: POST (classified as writes)
+  path:   /v1/oauth/token
+
+To allow this request, add 'platform.claude.com' to
+[egress].writes.allowed in .vitro/config.toml and recreate the env.
+```
+
+For tracing across requests:
 
 ```bash
-vitro create feat                  # new branch + worktree + cell
-vitro create feat --server prod    # also bind the cell to a server
-vitro add feat                     # adopt existing branch
-vitro remove feat                  # tear down worktree + cell
-vitro remove feat -d               # also delete the git branch
-vitro list [--json]                # list vitro-managed branches
-vitro path feat                    # print worktree path
-vitro switch feat                  # cd into worktree (requires shell hook)
+vitro logs <env>           # last 50 events
+vitro logs <env> -f        # follow live
 ```
 
-`--server` on `create` / `add` persists the binding at
-`.vitro/state/<cell>/server` so subsequent `vitro run`/`logs`/`status`
-calls route there without an explicit `--server` each time.
-
-### Running flows
-
-A "flow" is a script at `.vitro/flows/<name>.ts` (or any extension —
-`.sh`, `.py`, etc.). Vitro execs the script inside the cell with a set
-of `VITRO_*` env vars; the script is responsible for everything else.
-
-```bash
-vitro run [<cell>] [<flow>]            # exec .vitro/flows/<flow>.ts
-vitro run [<cell>] -c "<cmd>"          # ad-hoc command, ignores flows/
-vitro run [<cell>] -d                  # detach
-vitro run [<cell>] -- key=val          # → VITRO_PARAM_KEY env var
-vitro logs [<cell>] [-f] [--json]      # view output (--json emits JSONL)
-vitro status [<cell>] [--json]         # cell status
-vitro shell [<cell>] -c "<cmd>" --json # capture exit_code/stdout/stderr/duration_ms
-vitro stop [<cell>]                    # stop cell, data preserved
-```
-
-If only one flow exists in `.vitro/flows/`, `vitro run` resolves to it
-without naming. Otherwise specify which. `vitro run` always pushes the
-cell branch before invoking the flow, so edits to flow files take
-effect immediately — no need to `vitro stop` to refresh.
-
-A flow declares its own dependencies via [nix shebangs][nix-shebang].
-For shells that treat `#` as a comment (bash, python), the canonical
-multi-line form works:
-
-```bash
-#!/usr/bin/env nix-shell
-#! nix-shell -i bash --pure
-#! nix-shell -p curl jq
-#! nix-shell -I nixpkgs=https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz
-```
-
-JS/TS runtimes (bun, node) only honor a shebang on line 1 and reject
-the subsequent `#!` directives as parse errors. The standard workaround
-is a tiny bash launcher exec'ing the real interpreter:
-
-```
-.vitro/flows/build.sh    # bash wrapper — what `vitro run cell build` resolves
-.vitro/build.ts          # pure TS impl, no shebang
-```
-
-```bash
-# build.sh
-#!/usr/bin/env nix-shell
-#! nix-shell -i bash
-#! nix-shell -p bun nodejs
-#! nix-shell -I nixpkgs=https://github.com/NixOS/nixpkgs/archive/<commit>.tar.gz
-exec bun "$(dirname "$0")/../build.ts" "$@"
-```
-
-The default cell has nix + git + sshd; everything language-specific is
-pulled in by the shebang. Different flows can pin different nixpkgs
-revisions and not conflict.
-
-[nix-shebang]: https://nix.dev/tutorials/first-steps/reproducible-scripts.html
-
-### Env vars in flows
-
-| Variable | Description |
-|---|---|
-| `VITRO_CELL` | Cell name |
-| `VITRO_BRANCH` | Git branch |
-| `VITRO_REPO` | Repo name (mount path inside cell) |
-| `VITRO_SERVER` | Server cell runs on |
-| `VITRO_PARAM_<KEY>` | From `vitro run -- key=value` |
-
-### Interactive use
-
-```bash
-vitro shell <cell>                  # interactive SSH
-vitro shell <cell> -c "<cmd>"       # exec one command
-```
-
-### ACP — drive a cell from an external agent client
-
-`vitro acp <cell>` exposes a cell as an [Agent Client Protocol] provider:
-stdin/stdout carries JSON-RPC between an in-cell agent process and an
-ACP client (e.g. [Paseo]). The substrate handles routing, secrets push,
-and code sync; the agent runs sandboxed inside the cell.
-
-[Agent Client Protocol]: https://paseo.sh/docs/custom-providers
-[Paseo]: https://paseo.sh
-
-Declare the in-cell agent command in `.vitro/config.toml`:
-
-```toml
-[acp]
-command = ["claude-code", "--acp"]
-# or any ACP-speaking binary
-```
-
-Then point your ACP client at vitro. For Paseo, in its config:
-
-```json
-{
-  "agents": {
-    "providers": {
-      "dogfood-1": {
-        "extends": "acp",
-        "label": "Vitro: dogfood-1",
-        "command": ["vitro", "acp", "dogfood-1"]
-      }
-    }
-  }
-}
-```
-
-Each spawn is one session — concurrent sessions on the same cell are
-fine (no run-pid lock). Works the same whether Paseo runs on your laptop
-(SSH path: laptop → server → cell) or on the host (server → cell).
-
-### Git interaction
-
-Vitro registers a `vitro` git remote at cell creation; plain git from
-there:
-
-```bash
-git fetch vitro                    # fetch agent's commits
-git diff vitro/feat                # review changes
-git pull vitro feat                # merge into current branch
-```
-
-### Dev servers
-
-```bash
-vitro tunnel <cell> -p 5173        # forward port with .cell DNS
-vitro tunnel <cell> -p 5173 -o     # also open in browser
-vitro tunnel <cell> -p 5173 -p 8000-8010
-```
-
-### Servers and deployment
-
-```bash
-vitro server list                              # read-only registry
-vitro server deploy [host-dir]                 # bootstrap NixOS or update in place
-vitro server deploy --boot --reboot            # activate at next boot, then reboot
-vitro server gc --older-than 7d                # delete stopped cells older than N
-```
-
-`vitro server deploy` auto-detects the target OS:
-- Already NixOS → updates via `nixos-rebuild --target-host` (builds on
-  the laptop, copies the closure, activates remotely)
-- Not NixOS → bootstraps via `nixos-anywhere`
-
-`--boot` activates at next boot rather than live-switching — useful
-when nixos-rebuild blocks the switch (dbus implementation changes,
-kernel updates, etc.). `--reboot` chains a reboot after a successful
-boot-mode deploy.
-
-### Machine-readable output
-
-`--json` is supported on the inspection commands. Stable shapes:
-
-```json
-// vitro list --json
-{ "cells": [{
-    "name": "feat-x", "branch": "feat-x", "server": "prod",
-    "status": "running", "ip": "192.168.83.42", "repo": "myrepo",
-    "worktree": "/repo/.vitro/trees/feat-x",
-    "started_at": null, "last_run": null
-}]}
-
-// vitro status <cell> --json
-{
-  "name": "feat-x", "status": "running", "ip": "192.168.83.42",
-  "process": { "running": true, "pid": null, "started_at": null },
-  "git": { "head": "abc1234", "ahead": 3, "behind": 0 }
-}
-
-// vitro shell <cell> -c "..." --json
-{ "exit_code": 0, "stdout": "...", "stderr": "...", "duration_ms": 1234 }
-
-// vitro logs <cell> --json (JSONL, one line per event)
-{"ts": 1730000000, "stream": "stdout", "line": "..."}
-```
-
-Fields the substrate doesn't yet track (`started_at`, `last_run`,
-`process.pid`) are emitted as `null` rather than missing, so consumers
-see a consistent schema.
-
-## Anatomy
-
-The **proxy** is the core security boundary. It sits between the cell
-and the internet, injecting credentials into outbound requests and
-filtering egress by HTTP method and domain. Secrets never enter the VM.
-
-```mermaid
-flowchart LR
-    subgraph cell ["Cell · microVM"]
-        agent[Agent]
-        fs["repo (writable)<br/>tmp"]
-        agent --- fs
-    end
-    subgraph host [Host]
-        proxy["mitmproxy<br/>· egress filter (allowlist for writes)<br/>· credential injection"]
-    end
-    internet[Internet]
-    agent -->|all egress| proxy
-    proxy --> internet
-```
+Server-side, the addon writes per-env activity to
+`/var/log/vitro/per-env/<env>.log` and global activity to
+`/var/log/vitro/proxy.log`. **Logs are not mounted into the env** —
+the agent can't introspect credential-injection mechanics from
+`NOAUTH` events or future addon logging.
 
 ## Threat model
 
 ### Secret exfiltration
 
-**Threat:** A prompt injection instructs the agent to read API keys and
-send them to an attacker-controlled endpoint.
+A prompt injection instructs the agent to read API keys and send them
+to an attacker-controlled endpoint.
 
-**Defense:** Secrets never enter the cell. The proxy injects credentials
-into outbound requests on the fly. Inside the VM, there are no
-environment variables, files, or config containing secrets. Write access
-is restricted by an egress allowlist — the agent can only POST to
-domains you explicitly permit.
+- Secrets never enter the env. The proxy injects them only on outbound
+  requests matching a `[[egress.credentials]]` rule.
+- Even if a placeholder is read by the agent, it's not the real value.
+- Egress allowlist limits where any data can be POSTed.
 
 ### Filesystem damage
 
-**Threat:** The agent modifies host files, installs persistent malware,
-or corrupts system state.
+The agent modifies host files, installs persistent malware, or corrupts
+system state.
 
-**Defense:** Each cell is a NixOS microVM with its own isolated
-filesystem. The repository is mounted via VirtioFS — the agent can
-modify repo contents but has no access to the host filesystem. There
-is no sudo, no root access. `vitro remove -d` wipes a cell completely.
+- Each env is a NixOS microvm with its own filesystem.
+- Only the repo dir is mounted via virtiofs; `/cella`, `/vitro`, etc.
+  are the only writable host-shared paths.
+- No sudo. No root. `vitro remove <env>` wipes everything.
+
+### Network-mediated exfiltration
+
+The agent constructs requests to allowed hosts (e.g. `github.com`) that
+encode secrets in URL paths or bodies.
+
+- Currently mitigated only by the small allowlist surface.
+- The proxy logs every outbound write; per-host body inspection is
+  *capable* but not currently configured.
+- This is the most realistic remaining attack vector. Keep the
+  allowlist minimal.
 
 ## NixOS module effects
 
-Both modules are opt-in (`enable = true`) and only modify the system
-when explicitly enabled.
-
 ### Server module (`vitro.nixosModules.server`)
 
-**Network:**
-- Bridge interface (`cellbr` on `192.168.83.0/24`)
-- systemd-networkd for VM tap devices
-- NAT masquerading, `net.ipv4.ip_forward = 1`
+**Network:** `cellbr` bridge on `192.168.83.0/24`, systemd-networkd
+for VM tap devices, NAT masquerading.
 
-**Firewall (nftables):**
-- Default-drop for cells — only proxy (8080), git credentials (8081),
-  SSH (22)
+**Firewall (nftables):** default-drop for envs — only proxy ports
+(8080–8082) and SSH (22) reachable.
 
-**DNS:**
-- dnsmasq on bridge serving `.cell` hostnames
-- Only listens on bridge — does not affect host DNS
+**DNS:** dnsmasq on the bridge serving env hostnames; does not affect
+host DNS.
 
-**Services:**
-- `vitro-mitmproxy` — egress filtering + credential injection
-- `vitro-services` — control API (cell lifecycle)
-- `vitro-ca-sync` — mitmproxy CA cert extraction
-- `vitro-hostkey` — SSH keypair for server-side VM access
-- `vitro-gc` (optional timer) — periodic GC of stopped cells
+**Services:** `vitro-mitmproxy` (egress filtering + credential
+injection), `vitro-services` (control API), `vitro-ca-sync`,
+`vitro-hostkey`, optional `vitro-gc` timer.
 
-**Filesystem:**
-- `/var/lib/vitro/` — cells, IP pool, DNS hosts, CA certs, secrets
-- `/var/log/vitro/` — proxy and service logs
+**Filesystem:** `/var/lib/vitro/` (envs, IP pool, DNS hosts, CA certs,
+secrets); `/var/log/vitro/` (proxy and per-env logs).
 
 ### Client module (`vitro.nixosModules.client`)
 
-**`/etc/hosts`:**
-- Writable mode so `vitro tunnel` can add `.cell` entries at runtime
+**`/etc/hosts`:** writable mode so `vitro tunnel` can register
+hostnames.
 
-**Config files:**
-- `~/.config/vitro/servers.toml` from `servers` option
-- `~/.config/vitro/config.toml` from `server` and `sync` options
+**Config files:** materializes `~/.config/vitro/servers.toml` and
+`~/.config/vitro/config.toml`.
 
-**VM config (localhost):**
-- Copies `vmConfig` to `/var/lib/vitro/vm-config/`
-
-**Sudo rules (passwordless):**
+**Sudo (passwordless, narrowly scoped):**
 - `ip addr add/del 127.*/8 dev lo` — loopback aliases for tunnels
 - `vitro util hosts add/remove` — `/etc/hosts` manipulation
