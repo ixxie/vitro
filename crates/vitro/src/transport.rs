@@ -114,11 +114,6 @@ impl Transport for RemoteTransport {
         let remote_url = format!("vitro://{}/{}", self.client.user_host(), env);
         repo.add_vitro_remote(&remote_url).ok();
 
-        // ALWAYS push — bare repo on server must stay in sync with HEAD.
-        let sp = spinner("pushing repo");
-        repo.push_to_vitro()?;
-        sp.finish_with_message(format!("{} pushed", ok()));
-
         if already_running {
             // Push updated secrets into the running env.
             if let Some(ref content) = secrets_content {
@@ -126,6 +121,14 @@ impl Transport for RemoteTransport {
             }
             return Ok(());
         }
+
+        // Cold start: seed the env's bare repo from laptop HEAD. After this
+        // first push, the env is the source of truth — subsequent shells
+        // don't re-push (would clobber in-env commits). Use `git push vitro`
+        // explicitly when you want to move work from laptop to env.
+        let sp = spinner("pushing repo");
+        repo.push_to_vitro()?;
+        sp.finish_with_message(format!("{} pushed", ok()));
 
         // build and start with full config (cold-start only)
         let sp = spinner(&format!("booting {}", env));
