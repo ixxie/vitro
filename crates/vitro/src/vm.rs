@@ -588,7 +588,7 @@ pub fn shell(
 
 // Proxy control API
 
-fn register_proxy_rules(ip: &str, env_name: &str, config: &EnvConfig) -> Result<()> {
+pub fn register_proxy_rules(ip: &str, env_name: &str, config: &EnvConfig) -> Result<()> {
     let mut body = serde_json::json!({
         "envIp": ip,
         "envId": env_name,

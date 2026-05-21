@@ -277,6 +277,18 @@ async fn handle_prepare(req: &str) -> (&'static str, String) {
 
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         crate::git::init_clone_server(&up.name, &up.config)?;
+
+        // Auto soft-reload: if the env is already running, re-push its
+        // egress/credentials so config edits land without a full restart.
+        if crate::vm::microvm_unit_active(&up.name) {
+            let rt = crate::vm::runtime_dir(&up.name);
+            if let Ok(ip) = std::fs::read_to_string(rt.join("ip")) {
+                let ip = ip.trim();
+                if !ip.is_empty() {
+                    crate::vm::register_proxy_rules(ip, &up.name, &up.config)?;
+                }
+            }
+        }
         Ok(())
     }).await;
 

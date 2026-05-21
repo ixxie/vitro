@@ -66,6 +66,14 @@ enum Commands {
     },
     /// Stop an env (data preserved)
     Stop(StopArgs),
+    /// Rebuild an env's microvm derivation and restart it. Use for changes
+    /// baked into the VM image: memory, vcpu, persist paths, .vitro/flake.nix.
+    ///
+    /// Reboots the guest OS — running processes (including claude agents
+    /// background sessions) are killed. Persist mounts and the bare repo
+    /// survive. Egress/credential changes do NOT require rebuild; they
+    /// auto-reload on `vitro shell`/`create`.
+    Rebuild(StopArgs),
     /// Show env status
     Status {
         /// Env name (omit for all)
@@ -315,6 +323,10 @@ pub fn run() -> Result<()> {
             let repo = git::Repo::open()?;
             cmd_stop(&repo, &args.name)
         }
+        Commands::Rebuild(args) => {
+            let repo = git::Repo::open()?;
+            cmd_rebuild(&repo, &args.name)
+        }
         Commands::Shell(args) => {
             let repo = git::Repo::open()?;
             cmd_shell(&repo, args)
@@ -556,6 +568,17 @@ fn cmd_stop(repo: &git::Repo, env: &str) -> Result<()> {
         println!("  {} not running", bold(env));
     }
 
+    Ok(())
+}
+
+#[instrument(skip(repo), fields(env = %env))]
+fn cmd_rebuild(repo: &git::Repo, env: &str) -> Result<()> {
+    cmd_stop(repo, env)?;
+    let active = find_env_server(repo, env)?;
+    let cfg = config::load(repo.root())?;
+    let t = make_transport(&active)?;
+    t.ensure_running(env, repo, &cfg)?;
+    println!("{} rebuilt {}", ok(), bold(env));
     Ok(())
 }
 
