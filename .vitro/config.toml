@@ -1,18 +1,18 @@
-# Vitro cell config for the vitro repo itself — used to dogfood vitro on
-# its own development.
+# Vitro dogfoods itself: this env is for developing vitro from inside vitro.
 
 memory = "8192M"
 vcpu = 4
-
-# nix builds need lots of disk
-post_push = "nix flake check --no-build"
-
-[secrets]
-keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPcwKdkSvC2AP3kbQva2nhLOM9ha4VIuHVTne5RPIXLz ixxie@contingent"]
+server = "grove"
 
 [egress]
-# OpenRouter for LLM calls, GitHub for PRs, npmjs for package installs
-writes.allowed = ["openrouter.ai", "api.github.com", "registry.npmjs.org"]
+writes.allowed = [
+    "api.anthropic.com",
+    "statsig.anthropic.com",
+    "platform.claude.com",
+    "api.github.com",
+    "registry.npmjs.org",
+    "openrouter.ai",
+]
 
 [[egress.credentials]]
 host = "openrouter.ai"
@@ -23,3 +23,14 @@ env_var = "OPENROUTER_API_KEY"
 host = "api.github.com"
 header = "Authorization"
 env_var = "GITHUB_TOKEN"
+
+[[persist]]
+path = "/home/agent/.claude"
+purpose = "claude OAuth state and session history"
+
+[[persist]]
+path = "/var/log/vitro"
+purpose = "session log archives"
+
+[secrets]
+keys = ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPcwKdkSvC2AP3kbQva2nhLOM9ha4VIuHVTne5RPIXLz ixxie@contingent"]
