@@ -147,7 +147,6 @@ in {
       git
       curl
       jq
-      dtach
     ];
 
     variables = {
