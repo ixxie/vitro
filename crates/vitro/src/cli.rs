@@ -84,6 +84,8 @@ enum Commands {
     },
     /// SSH into an env
     Shell(ShellArgs),
+    /// Tail an env's proxy activity log (operator-side, via SSH to the server)
+    Logs(LogsArgs),
     /// Forward declared ports from a remote env to localhost
     Tunnel(TunnelArgs),
     /// Manage encrypted secrets
@@ -129,6 +131,18 @@ struct ShellArgs {
     /// Server-side mode (skip repo checks)
     #[arg(long, hide = true)]
     server: bool,
+}
+
+#[derive(Args, Debug)]
+struct LogsArgs {
+    /// Env name
+    name: String,
+    /// Follow (tail -f)
+    #[arg(short, long)]
+    follow: bool,
+    /// Number of lines to show initially
+    #[arg(short = 'n', long, default_value = "50")]
+    lines: u32,
 }
 
 #[derive(Args)]
@@ -334,6 +348,10 @@ pub fn run() -> Result<()> {
         Commands::Tunnel(args) => {
             let repo = git::Repo::open()?;
             cmd_tunnel(&repo, args)
+        }
+        Commands::Logs(args) => {
+            let repo = git::Repo::open()?;
+            cmd_logs(&repo, args)
         }
     }
 }
@@ -770,6 +788,45 @@ fn cleanup_tunnel_dns(loopback: &str, dns: &str) {
     std::process::Command::new("sudo")
         .args(["ip", "addr", "del", &format!("{loopback}/8"), "dev", "lo"])
         .output().ok();
+}
+
+#[instrument(skip(repo), fields(env = %args.name))]
+fn cmd_logs(repo: &git::Repo, args: LogsArgs) -> Result<()> {
+    let env = &args.name;
+    let active = find_env_server(repo, env)?;
+    let log_path = format!("/var/log/vitro/per-env/{env}.log");
+
+    let mut tail_args: Vec<String> = vec!["-n".to_string(), args.lines.to_string()];
+    if args.follow {
+        tail_args.push("-f".to_string());
+    }
+    tail_args.push(log_path.clone());
+
+    if active.is_server() {
+        let target = active.target()?
+            .ok_or_else(|| anyhow::anyhow!("server has no target"))?;
+        let mut cmd = std::process::Command::new("ssh");
+        cmd.args([
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            &target,
+            "tail",
+        ]);
+        cmd.args(&tail_args);
+        let status = cmd.status().context("ssh tail failed")?;
+        if !status.success() && status.code() != Some(130) {
+            anyhow::bail!("tail exited with {status}");
+        }
+    } else {
+        let mut cmd = std::process::Command::new("tail");
+        cmd.args(&tail_args);
+        let status = cmd.status().context("tail failed")?;
+        if !status.success() && status.code() != Some(130) {
+            anyhow::bail!("tail exited with {status}");
+        }
+    }
+    Ok(())
 }
 
 fn cmd_tunnel(repo: &git::Repo, args: TunnelArgs) -> Result<()> {

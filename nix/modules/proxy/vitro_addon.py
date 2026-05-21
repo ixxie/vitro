@@ -24,6 +24,7 @@ STATIC_CONFIG = Path("/etc/vitro/proxy-config.json")
 DYNAMIC_ENVS = Path("/var/lib/vitro/envs.json")
 SECRETS_ENV = Path("/var/lib/vitro/secrets.env")
 LOG_FILE = Path("/var/log/vitro/proxy.log")
+PER_ENV_LOG_DIR = Path("/var/log/vitro/per-env")
 
 
 class VitroAddon:
@@ -87,6 +88,18 @@ class VitroAddon:
                 f.write(line + "\n")
         except Exception:
             pass
+
+        # Operator-side per-env log: not mounted into the env (the agent must
+        # not learn about credential-injection mechanics from log content).
+        # Read via the laptop `vitro logs <env>` over SSH.
+        env_name = (self.envs.get(client) or {}).get("envId")
+        if env_name:
+            try:
+                PER_ENV_LOG_DIR.mkdir(parents=True, exist_ok=True)
+                with open(PER_ENV_LOG_DIR / f"{env_name}.log", "a") as f:
+                    f.write(line + "\n")
+            except Exception:
+                pass
 
     def tls_clienthello(self, data: tls.ClientHelloData):
         host = data.context.server.address[0] if data.context.server.address else ""
