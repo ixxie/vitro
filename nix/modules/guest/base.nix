@@ -55,6 +55,17 @@ in {
     allowedTCPPorts = [22];
     trustedInterfaces = ["enp+"];
     extraCommands = ''
+      # Transparent proxy: redirect outbound TCP to redsocks before filtering.
+      # The -m owner exception prevents redsocks' own upstream connection from
+      # being redirected back into itself.
+      iptables -t nat -F OUTPUT
+      iptables -t nat -A OUTPUT -p tcp --dport 80 ! -d ${bridge.address} \
+        -m owner ! --uid-owner redsocks -j REDIRECT --to-port 12345
+      iptables -t nat -A OUTPUT -p tcp --dport 443 ! -d ${bridge.address} \
+        -m owner ! --uid-owner redsocks -j REDIRECT --to-port 12346
+
+      # Filter rules: default-drop egress, allow only loopback, established,
+      # and connections to the proxy bridge.
       iptables -P OUTPUT DROP
       iptables -A OUTPUT -o lo -j ACCEPT
       iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
@@ -63,6 +74,7 @@ in {
     extraStopCommands = ''
       iptables -P OUTPUT ACCEPT
       iptables -F OUTPUT
+      iptables -t nat -F OUTPUT
     '';
   };
 
