@@ -106,7 +106,25 @@ class VitroAddon:
 
         if not policy.is_allowed(client_ip, host, method, self.envs, self.egress):
             self._log("BLOCKED", host, client_ip, f"{method} {path}")
-            flow.response = http.Response.make(403, b"Blocked by vitro proxy")
+            env_name = (self.envs.get(client_ip) or {}).get("envId", "?")
+            direction = policy.classify_method(
+                method,
+                self.egress.get("reads", {}).get("methods") or policy.DEFAULT_READ_METHODS,
+            )
+            body = (
+                f"Blocked by vitro proxy.\n"
+                f"  env:    {env_name}\n"
+                f"  host:   {host}\n"
+                f"  method: {method} (classified as {direction})\n"
+                f"  path:   {path}\n"
+                f"\n"
+                f"To allow this request, add {host!r} to "
+                f"[egress].{direction}.allowed in .vitro/config.toml "
+                f"and recreate the env.\n"
+            ).encode()
+            flow.response = http.Response.make(
+                403, body, headers={"Content-Type": "text/plain; charset=utf-8"}
+            )
             return
 
         direction = policy.classify_method(
