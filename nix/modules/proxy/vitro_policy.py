@@ -32,16 +32,16 @@ def matches_any(hostname: str, domains) -> bool:
     return False
 
 
-def index_cells_by_ip(cells_list) -> dict:
-    """Index a list of cell-rule dicts by `cellIp`. Entries without a
-    cellIp are dropped. Later entries overwrite earlier on collision."""
+def index_envs_by_ip(envs_list) -> dict:
+    """Index a list of env-rule dicts by `envIp`. Entries without a
+    envIp are dropped. Later entries overwrite earlier on collision."""
     out: dict = {}
-    if not isinstance(cells_list, list):
+    if not isinstance(envs_list, list):
         return out
-    for cell in cells_list:
-        ip = (cell or {}).get("cellIp", "")
+    for env in envs_list:
+        ip = (env or {}).get("envIp", "")
         if ip:
-            out[ip] = cell
+            out[ip] = env
     return out
 
 
@@ -68,64 +68,64 @@ def normalize_client_ip(client_ip: str) -> str:
     return client_ip.removeprefix("::ffff:")
 
 
-def merge_rules(global_rules: dict, cell_egress: dict | None, direction: str) -> tuple:
-    """Resolve effective (allowed, denied) for a cell + direction.
+def merge_rules(global_rules: dict, env_egress: dict | None, direction: str) -> tuple:
+    """Resolve effective (allowed, denied) for a env + direction.
 
     Cell-level rules either layer on top of global (additive) or replace
-    them entirely (additive=False). Cell `allowed` overrides global; cell
+    them entirely (additive=False). Env `allowed` overrides global; env
     `denied` adds to global denied when additive.
     """
     rules = global_rules.get(direction, {}) or {}
     global_allowed = rules.get("allowed", [])
     global_denied = rules.get("denied", [])
 
-    cell_egress = cell_egress or {}
-    additive = cell_egress.get("additive", True)
-    cell_rules = cell_egress.get(direction) or {}
-    cell_allowed = cell_rules.get("allowed")
-    cell_denied = cell_rules.get("denied")
+    env_egress = env_egress or {}
+    additive = env_egress.get("additive", True)
+    env_rules = env_egress.get(direction) or {}
+    env_allowed = env_rules.get("allowed")
+    env_denied = env_rules.get("denied")
 
-    if cell_allowed is None and cell_denied is None:
+    if env_allowed is None and env_denied is None:
         return global_allowed, global_denied
 
     if additive:
-        allowed = cell_allowed if cell_allowed is not None else global_allowed
-        if cell_denied:
+        allowed = env_allowed if env_allowed is not None else global_allowed
+        if env_denied:
             if isinstance(global_denied, list):
-                denied = global_denied + cell_denied
+                denied = global_denied + env_denied
             else:
-                denied = cell_denied
+                denied = env_denied
         else:
             denied = global_denied
         return allowed, denied
 
-    return (cell_allowed or []), (cell_denied or [])
+    return (env_allowed or []), (env_denied or [])
 
 
 def is_allowed(
     client_ip: str,
     host: str,
     method: str,
-    cells: Mapping[str, dict],
+    envs: Mapping[str, dict],
     egress: dict,
     read_methods: Iterable[str] | None = None,
 ) -> bool:
     """Decide whether (client_ip → host, method) may proceed.
 
     Unknown clients are denied. Otherwise, classify the method, resolve
-    effective rules for the cell, and apply them with `denied` taking
+    effective rules for the env, and apply them with `denied` taking
     precedence unless `allowed` also matches (explicit override).
     """
     ip = normalize_client_ip(client_ip)
-    if ip not in cells:
+    if ip not in envs:
         return False
 
-    cell = cells[ip]
+    env = envs[ip]
     direction = classify_method(
         method,
         read_methods or egress.get("reads", {}).get("methods") or DEFAULT_READ_METHODS,
     )
-    allowed, denied = merge_rules(egress, cell.get("egress"), direction)
+    allowed, denied = merge_rules(egress, env.get("egress"), direction)
 
     # Specific (non-wildcard) denials always win — even over an explicit
     # allow. Wildcard "*" in `denied` is just default-deny and is
@@ -136,15 +136,15 @@ def is_allowed(
 
 
 def collect_credentials(
-    cells: Mapping[str, dict],
+    envs: Mapping[str, dict],
     client_ip: str,
     global_credentials: Sequence[dict],
 ) -> list[dict]:
     creds = list(global_credentials)
     ip = normalize_client_ip(client_ip)
-    if ip in cells:
-        cell_egress = cells[ip].get("egress") or {}
-        creds.extend(cell_egress.get("credentials", []))
+    if ip in envs:
+        env_egress = envs[ip].get("egress") or {}
+        creds.extend(env_egress.get("credentials", []))
     return creds
 
 

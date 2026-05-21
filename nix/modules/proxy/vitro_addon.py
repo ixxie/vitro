@@ -7,7 +7,7 @@ Vitro mitmproxy addon — thin adapter over vitro_policy.
 
 Reads config from:
   /etc/vitro/proxy-config.json  (static, from NixOS)
-  /var/lib/vitro/cells.json     (dynamic, from control API)
+  /var/lib/vitro/envs.json      (dynamic, from control API)
 """
 
 import json
@@ -21,7 +21,7 @@ import vitro_policy as policy
 
 
 STATIC_CONFIG = Path("/etc/vitro/proxy-config.json")
-DYNAMIC_CELLS = Path("/var/lib/vitro/cells.json")
+DYNAMIC_ENVS = Path("/var/lib/vitro/envs.json")
 SECRETS_ENV = Path("/var/lib/vitro/secrets.env")
 LOG_FILE = Path("/var/log/vitro/proxy.log")
 
@@ -31,17 +31,17 @@ class VitroAddon:
         self.egress: dict = {"reads": {}, "writes": {}}
         self.credentials: list[dict] = []
         self.passthrough: list[str] = []
-        self._static_cells: dict[str, dict] = {}
-        self._dynamic_cells: dict[str, dict] = {}
-        self._cells_mtime = 0.0
+        self._static_envs: dict[str, dict] = {}
+        self._dynamic_envs: dict[str, dict] = {}
+        self._envs_mtime = 0.0
         self._load_static()
         self._load_dynamic()
 
     @property
-    def cells(self) -> dict[str, dict]:
-        # dynamic (control API) wins on IP collision so that cell-egress
+    def envs(self) -> dict[str, dict]:
+        # dynamic (control API) wins on IP collision so that env-egress
         # overrides set at runtime take effect over the static config.
-        return {**self._static_cells, **self._dynamic_cells}
+        return {**self._static_envs, **self._dynamic_envs}
 
     def _load_static(self):
         if not STATIC_CONFIG.exists():
@@ -54,25 +54,25 @@ class VitroAddon:
 
         self.passthrough = cfg.get("egress", {}).get("passthrough", [])
         self.egress = cfg.get("egress", {"reads": {}, "writes": {}})
-        self._static_cells = policy.index_cells_by_ip(cfg.get("cells", []))
+        self._static_envs = policy.index_envs_by_ip(cfg.get("envs", []))
         self.credentials = self.egress.get("credentials", [])
 
     def _load_dynamic(self):
         # dynamic file may be deleted/recreated; if missing, drop dynamic
-        # cells entirely (static cells survive).
-        if not DYNAMIC_CELLS.exists():
-            if self._dynamic_cells:
-                self._dynamic_cells = {}
-                self._cells_mtime = 0.0
+        # envs entirely (static envs survive).
+        if not DYNAMIC_ENVS.exists():
+            if self._dynamic_envs:
+                self._dynamic_envs = {}
+                self._envs_mtime = 0.0
             return
         try:
-            mtime = DYNAMIC_CELLS.stat().st_mtime
-            if mtime <= self._cells_mtime:
+            mtime = DYNAMIC_ENVS.stat().st_mtime
+            if mtime <= self._envs_mtime:
                 return
-            self._cells_mtime = mtime
-            cells_list = json.loads(DYNAMIC_CELLS.read_text())
+            self._envs_mtime = mtime
+            envs_list = json.loads(DYNAMIC_ENVS.read_text())
             # full rebuild — handles registrations AND deregistrations
-            self._dynamic_cells = policy.index_cells_by_ip(cells_list)
+            self._dynamic_envs = policy.index_envs_by_ip(envs_list)
         except Exception:
             pass
 
@@ -104,7 +104,7 @@ class VitroAddon:
         method = flow.request.method
         path = flow.request.path
 
-        if not policy.is_allowed(client_ip, host, method, self.cells, self.egress):
+        if not policy.is_allowed(client_ip, host, method, self.envs, self.egress):
             self._log("BLOCKED", host, client_ip, f"{method} {path}")
             flow.response = http.Response.make(403, b"Blocked by vitro proxy")
             return
@@ -116,7 +116,7 @@ class VitroAddon:
         tag = "READ" if direction == "reads" else "WRITE"
         self._log(tag, host, client_ip, f"{method} {path}")
 
-        creds = policy.collect_credentials(self.cells, client_ip, self.credentials)
+        creds = policy.collect_credentials(self.envs, client_ip, self.credentials)
         if creds:
             secrets = policy.load_secrets_env(SECRETS_ENV)
             headers = policy.compute_injected_headers(host, creds, secrets, os.environ)

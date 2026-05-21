@@ -89,24 +89,24 @@ def test_merge_rules_no_cell_overrides():
 
 def test_merge_rules_additive_allowed_replaces_global_allowed():
     egress = {"writes": {"allowed": ["github.com"], "denied": []}}
-    cell = {"additive": True, "writes": {"allowed": ["api.linear.app"]}}
-    a, d = p.merge_rules(egress, cell, "writes")
+    env = {"additive": True, "writes": {"allowed": ["api.linear.app"]}}
+    a, d = p.merge_rules(egress, env, "writes")
     assert a == ["api.linear.app"]
     assert d == []
 
 
 def test_merge_rules_additive_denied_appends():
     egress = {"writes": {"allowed": ["github.com"], "denied": ["evil.com"]}}
-    cell = {"additive": True, "writes": {"denied": ["worse.com"]}}
-    a, d = p.merge_rules(egress, cell, "writes")
+    env = {"additive": True, "writes": {"denied": ["worse.com"]}}
+    a, d = p.merge_rules(egress, env, "writes")
     assert a == ["github.com"]
     assert d == ["evil.com", "worse.com"]
 
 
 def test_merge_rules_replace_mode():
     egress = {"writes": {"allowed": ["github.com"], "denied": ["evil.com"]}}
-    cell = {"additive": False, "writes": {"allowed": ["api.linear.app"]}}
-    a, d = p.merge_rules(egress, cell, "writes")
+    env = {"additive": False, "writes": {"allowed": ["api.linear.app"]}}
+    a, d = p.merge_rules(egress, env, "writes")
     assert a == ["api.linear.app"]
     assert d == []
 
@@ -122,7 +122,7 @@ def base_egress():
 
 
 def base_cells():
-    return {"10.0.0.5": {"cellIp": "10.0.0.5", "branchId": "feat-x"}}
+    return {"10.0.0.5": {"envIp": "10.0.0.5", "branchId": "feat-x"}}
 
 
 def test_unknown_client_blocked():
@@ -188,24 +188,24 @@ def test_domain_wildcard_in_deny_is_specific_not_default():
 
 
 def test_cell_additive_writes_allow_extra_host():
-    cells = base_cells()
-    cells["10.0.0.5"]["egress"] = {
+    envs = base_cells()
+    envs["10.0.0.5"]["egress"] = {
         "additive": True,
         "writes": {"allowed": ["api.openai.com"]},
     }
-    # cell-level allowed REPLACES global allowed in additive mode
-    assert p.is_allowed("10.0.0.5", "api.openai.com", "POST", cells, base_egress()) is True
-    assert p.is_allowed("10.0.0.5", "api.linear.app", "POST", cells, base_egress()) is False
+    # env-level allowed REPLACES global allowed in additive mode
+    assert p.is_allowed("10.0.0.5", "api.openai.com", "POST", envs, base_egress()) is True
+    assert p.is_allowed("10.0.0.5", "api.linear.app", "POST", envs, base_egress()) is False
 
 
 def test_cell_additive_denied_blocks_globally_allowed():
-    cells = base_cells()
-    cells["10.0.0.5"]["egress"] = {
+    envs = base_cells()
+    envs["10.0.0.5"]["egress"] = {
         "additive": True,
         "writes": {"denied": ["api.linear.app"]},
     }
-    # globally allowed but cell denies it
-    assert p.is_allowed("10.0.0.5", "api.linear.app", "POST", cells, base_egress()) is False
+    # globally allowed but env denies it
+    assert p.is_allowed("10.0.0.5", "api.linear.app", "POST", envs, base_egress()) is False
 
 
 # ---- credential injection ---------------------------------------------------
@@ -273,47 +273,47 @@ def test_inject_case_insensitive_host_match():
 
 
 def test_collect_credentials_merges_global_and_cell():
-    cells = {"10.0.0.5": {"egress": {"credentials": [{"host": "a.com", "header": "h", "envVar": "A"}]}}}
-    creds = p.collect_credentials(cells, "10.0.0.5", [{"host": "b.com", "header": "h", "envVar": "B"}])
+    envs = {"10.0.0.5": {"egress": {"credentials": [{"host": "a.com", "header": "h", "envVar": "A"}]}}}
+    creds = p.collect_credentials(envs, "10.0.0.5", [{"host": "b.com", "header": "h", "envVar": "B"}])
     hosts = {c["host"] for c in creds}
     assert hosts == {"a.com", "b.com"}
 
 
 def test_collect_credentials_unknown_ip_only_global():
-    cells = {}
-    creds = p.collect_credentials(cells, "10.0.0.99", [{"host": "g.com", "header": "h", "envVar": "G"}])
+    envs = {}
+    creds = p.collect_credentials(envs, "10.0.0.99", [{"host": "g.com", "header": "h", "envVar": "G"}])
     assert [c["host"] for c in creds] == ["g.com"]
 
 
-# ---- cells indexing ---------------------------------------------------------
+# ---- envs indexing ---------------------------------------------------------
 
 
-def test_index_cells_by_ip_basic():
-    cells = [
-        {"cellIp": "10.0.0.5", "branchId": "a"},
-        {"cellIp": "10.0.0.6", "branchId": "b"},
+def test_index_envs_by_ip_basic():
+    envs = [
+        {"envIp": "10.0.0.5", "branchId": "a"},
+        {"envIp": "10.0.0.6", "branchId": "b"},
     ]
-    idx = p.index_cells_by_ip(cells)
+    idx = p.index_envs_by_ip(envs)
     assert set(idx) == {"10.0.0.5", "10.0.0.6"}
     assert idx["10.0.0.5"]["branchId"] == "a"
 
 
-def test_index_cells_by_ip_dedup_keeps_last():
-    cells = [
-        {"cellIp": "10.0.0.5", "branchId": "old"},
-        {"cellIp": "10.0.0.5", "branchId": "new"},
+def test_index_envs_by_ip_dedup_keeps_last():
+    envs = [
+        {"envIp": "10.0.0.5", "branchId": "old"},
+        {"envIp": "10.0.0.5", "branchId": "new"},
     ]
-    assert p.index_cells_by_ip(cells)["10.0.0.5"]["branchId"] == "new"
+    assert p.index_envs_by_ip(envs)["10.0.0.5"]["branchId"] == "new"
 
 
-def test_index_cells_by_ip_skips_missing_ip():
-    cells = [{"branchId": "no-ip"}, {"cellIp": "", "branchId": "empty"}]
-    assert p.index_cells_by_ip(cells) == {}
+def test_index_envs_by_ip_skips_missing_ip():
+    envs = [{"branchId": "no-ip"}, {"envIp": "", "branchId": "empty"}]
+    assert p.index_envs_by_ip(envs) == {}
 
 
-def test_index_cells_by_ip_handles_non_list():
-    assert p.index_cells_by_ip(None) == {}
-    assert p.index_cells_by_ip({"not": "a list"}) == {}
+def test_index_envs_by_ip_handles_non_list():
+    assert p.index_envs_by_ip(None) == {}
+    assert p.index_envs_by_ip({"not": "a list"}) == {}
 
 
 # ---- secrets.env parsing ----------------------------------------------------
