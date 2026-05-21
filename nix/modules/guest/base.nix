@@ -71,6 +71,10 @@ in {
       iptables -A OUTPUT -o lo -j ACCEPT
       iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
       iptables -A OUTPUT -d ${bridge.address} -j ACCEPT
+
+      # Diagnostic snapshot so the (sudo-less) agent can verify the rules.
+      iptables-save > /tmp/vitro-iptables.txt 2>&1 || true
+      chmod 644 /tmp/vitro-iptables.txt 2>/dev/null || true
     '';
     extraStopCommands = ''
       iptables -P OUTPUT ACCEPT
