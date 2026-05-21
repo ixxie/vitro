@@ -181,12 +181,25 @@ in {
 
   };
 
+  # Netfilter modules — needed for the transparent-proxy REDIRECT rules
+  # in the firewall. The microvm kernel doesn't auto-load these, so without
+  # them the iptables rules install but don't fire (packets bypass NAT).
+  boot.kernelModules = [
+    "nf_nat"
+    "nf_nat_redirect"
+    "nf_conntrack"
+    "xt_REDIRECT"
+    "xt_owner"
+  ];
+
   # Kernel hardening
   boot.kernel.sysctl = {
     "kernel.dmesg_restrict" = 1;
     "kernel.sysrq" = 0;
     "kernel.yama.ptrace_scope" = 2;
     "kernel.kptr_restrict" = 2;
+    # Allow REDIRECT targets to route to loopback from non-loopback contexts.
+    "net.ipv4.conf.all.route_localnet" = 1;
   };
 
   boot.tmp = {
